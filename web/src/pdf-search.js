@@ -51,7 +51,7 @@ export class PDFSearch {
     this.bar.addEventListener('keydown', event => {
       if (event.isComposing) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); this.close(); }
-      else if (event.key === 'Enter') { event.preventDefault(); this.search('again', event.shiftKey); }
+      else if (event.key === 'Enter' && event.target === this.input) { event.preventDefault(); this.search('again', event.shiftKey); }
     });
     pane.addEventListener('keydown', event => {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f' && this.enabled) {
@@ -86,8 +86,10 @@ export class PDFSearch {
 
   open(focus = true) {
     if (!this.enabled) return;
+    const wasClosed = this.bar.hidden;
     this.bar.hidden = false;
     this.toggle.setAttribute('aria-expanded', 'true');
+    if (wasClosed && this.input.value) this.search('highlightallchange');
     if (focus) { this.input.focus(); this.input.select(); }
   }
 
@@ -117,6 +119,6 @@ export class PDFSearch {
   }
 
   showCount(matches) {
-    this.count.textContent = !this.input.value ? '' : matches?.total > 0 ? `${matches.current} / ${matches.total} 件` : '検索しています…';
+    this.count.textContent = !this.input.value ? '' : matches?.total > 0 ? `${matches.current} / ${matches.total} 件` : '0 件';
   }
 }

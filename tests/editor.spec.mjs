@@ -1,7 +1,7 @@
 import { test as base, expect } from '@playwright/test';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -83,6 +83,24 @@ function redactOutput(text, token) {
   return token ? text.replaceAll(token, '[local session token]') : text;
 }
 
+async function attachBuildFiles(testInfo, directory, prefix, recursive = false) {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    const file = path.join(directory, entry.name);
+    if (recursive && entry.isDirectory()) {
+      await attachBuildFiles(testInfo, file, `${prefix}-${entry.name}`, true);
+    } else if (entry.isFile() && (/(?:\.fls|\.synctex(?:\.gz)?)$/.test(entry.name) || /^pdf-.*\.json$/.test(entry.name))) {
+      await testInfo.attach(`${prefix}-${entry.name}`, {
+        path: file,
+        contentType: entry.name.endsWith('.gz') ? 'application/gzip' : entry.name.endsWith('.json') ? 'application/json' : 'text/plain',
+      });
+    }
+  }
+}
+
 const test = base.extend({
   session: async ({}, use, testInfo) => {
     await stat(executable).catch(() => {
@@ -160,6 +178,8 @@ const test = base.extend({
           body: Buffer.from(tokens.reduce((output, token) => redactOutput(output, token), `${stdout}\n${stderr}`)),
           contentType: 'text/plain',
         });
+        await attachBuildFiles(testInfo, path.join(project, '.local-tex-editor', 'build'), 'tex');
+        await attachBuildFiles(testInfo, path.join(temp, 'config', 'cache'), 'cache', true);
       }
       await rm(temp, { recursive: true, force: true, maxRetries: 6, retryDelay: 200 });
     }
@@ -257,7 +277,9 @@ test('日本語の原稿を編集し，参考文献と PDF を更新する', asy
   const initialWidth = await firstPage.evaluate(element => element.getBoundingClientRect().width);
   await page.getByTestId('pdf-zoom-in').click();
   await expect.poll(() => firstPage.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(initialWidth);
+  const expandedWidth = await firstPage.evaluate(element => element.getBoundingClientRect().width);
   await page.getByTestId('pdf-zoom-out').click();
+  await expect.poll(() => firstPage.evaluate(element => element.getBoundingClientRect().width)).toBeLessThan(expandedWidth);
   await page.getByTestId('pdf-zoom').selectOption('page-width');
   await expect(canvas).toHaveAttribute('data-ready', 'true');
 
@@ -462,8 +484,10 @@ test('150 ページの PDF の末尾へ移動し，必要なページを描画�
   expect(rendering.pages).toBe(150);
   expect(rendering.canvases).toBeGreaterThan(0);
   expect(rendering.canvases).toBeLessThanOrEqual(20);
+  const renderingFile = testInfo.outputPath('pdf-rendering.json');
+  await writeFile(renderingFile, JSON.stringify({ ...rendering, elapsedMS: finished.elapsedMs }, null, 2));
   await testInfo.attach('pdf-rendering.json', {
-    body: Buffer.from(JSON.stringify({ ...rendering, elapsedMS: finished.elapsedMs }, null, 2)),
+    path: renderingFile,
     contentType: 'application/json',
   });
 });

@@ -41,7 +41,7 @@ const state = {
   connected: false,
   externalProjectChanged: false,
   reportedBuild: '',
-  preferences: { autoSave: true, theme: null },
+  preferences: { autoSave: true, theme: null, editorFontSize: 14 },
   theme: 'light',
   saveQueue: Promise.resolve(),
   autoSaveTimer: null,
@@ -624,6 +624,7 @@ function showSettings() {
   $('main-file').value = project?.main || '';
   $('compile-mode').value = project?.mode || 'pdflatex';
   $('autosave-setting').checked = state.preferences.autoSave;
+  $('editor-font-size').value = String(state.preferences.editorFontSize);
   $('main-field').hidden = !project; $('mode-field').hidden = !project;
   $('settings-error').hidden = true; $('settings-dialog').showModal();
 }
@@ -635,7 +636,9 @@ async function saveSettings(event) {
   setOperation('settings'); setDialogBusy($('settings-dialog'), true); $('settings-error').hidden = true;
   try {
     const meta = await api('/api/settings', { method: 'PUT', body }); await applyMeta(meta);
-    state.preferences.autoSave = $('autosave-setting').checked; savePreferences(); await sessionStore.flush();
+    state.preferences.autoSave = $('autosave-setting').checked;
+    applyEditorFontSize($('editor-font-size').valueAsNumber);
+    savePreferences(); await sessionStore.flush();
     $('settings-dialog').close(); clearError(); updateAutoSaveStatus(); toast('設定を保存しました．');
   }
   catch (error) { $('settings-error').textContent = error.message || String(error); $('settings-error').hidden = false; }
@@ -750,7 +753,7 @@ async function startBuild() {
   try {
     await saveAll();
     const build = await api('/api/build', { method: 'POST', body: {} });
-    setLogVisible(true); applyBuild(build);
+    applyBuild(build);
   } catch (error) { if (!error?.shown) showError(error); }
   finally { setOperation(''); if (!isRunning()) { const current = state.build; $('build-status').textContent = current ? ({ success: 'コンパイル完了', failed: 'コンパイル失敗', cancelled: '停止しました' }[current.status] || 'コンパイル前') : 'コンパイル前'; } }
 }
@@ -881,13 +884,21 @@ function applyTheme(theme, persist = false) {
   if (persist) { state.preferences.theme = state.theme; savePreferences(); }
 }
 function savePreferences() { sessionStore.write('preferences', { ...state.preferences, updatedAt: Date.now() }, 0); }
+function applyEditorFontSize(value) {
+  const size = Number.isFinite(value) ? Math.min(24, Math.max(12, Math.round(value))) : 14;
+  state.preferences.editorFontSize = size;
+  document.documentElement.style.setProperty('--editor-font-size', `${size}px`);
+  state.editor?.requestMeasure();
+}
 async function loadPreferences() {
   const preferences = await sessionStore.read('preferences');
   if (preferences && typeof preferences === 'object') {
     state.preferences.autoSave = preferences.autoSave !== false;
     state.preferences.theme = ['light', 'dark'].includes(preferences.theme) ? preferences.theme : null;
+    state.preferences.editorFontSize = preferences.editorFontSize;
   }
   if (state.preferences.theme) applyTheme(state.preferences.theme);
+  applyEditorFontSize(state.preferences.editorFontSize);
   updateAutoSaveStatus();
 }
 function updateAutoSaveStatus() { $('autosave-status').textContent = state.preferences.autoSave ? (isRunning() ? '自動保存はコンパイル後' : '自動保存オン') : '手動で保存'; }
@@ -1128,7 +1139,7 @@ function updateOutlinePosition() {
 }
 function renderLogLocations() {
   const container = $('log-locations'); container.replaceChildren();
-  const locations = extractLogLocations(state.fullLog, state.meta?.project?.files || []);
+  const locations = extractLogLocations(state.fullLog, state.meta?.project?.files || [], state.meta?.project?.root);
   container.hidden = !locations.length;
   for (const location of locations.slice(0, 40)) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'log-location'; button.title = location.message || '';

@@ -70,7 +70,7 @@ func TestSyncTeXMatchesWindowsFileNamesUsingTheRecorder(t *testing.T) {
 	}
 	recordedPath := filepath.Join(root, ".local-tex-editor", "build", "main.fls")
 	writeTestFile(t, recordedPath, []byte("INPUT ./main.tex\nINPUT ./"+first+"\nINPUT ./"+first+"\n"))
-	recorded := recorderSources(root, recordedPath)
+	recorded := recorderSources(root, recordedPath, revisions)
 	if len(recorded) != 2 || !recorded[first] {
 		t.Fatalf("could not read the actual recorder inputs: %#v", recorded)
 	}
@@ -92,6 +92,30 @@ func TestSyncTeXMatchesWindowsFileNamesUsingTheRecorder(t *testing.T) {
 	}
 	if actual != first {
 		t.Fatalf("could not match the system's file name representation: %q", actual)
+	}
+}
+
+func TestSyncTeXRecorderAlsoMatchesLegacyNames(t *testing.T) {
+	_, root := testApp(t)
+	name := "追加の 原稿.tex"
+	writeTestFile(t, filepath.Join(root, name), []byte("one\n"))
+	revisions := snapshotSourceRevisions(root)
+	lossy := func(name string) []byte {
+		return []byte(strings.Map(func(r rune) rune {
+			if r > 127 {
+				return '?'
+			}
+			return r
+		}, name))
+	}
+	data := []byte("INPUT ./main.tex\r\nINPUT " + string(lossy("./"+name)) + "\r\n")
+	recorded := resolveRecorderSources(root, data, revisions, lossy)
+	if len(recorded) != 2 || !recorded[name] {
+		t.Fatalf("the recorder lost a source written in a legacy code page: %#v", recorded)
+	}
+	resolve := newSyncSourceResolver(root, revisions, recorded, lossy)
+	if actual := resolve(string(lossy("./" + name))); actual != name {
+		t.Fatalf("a partial recorder list removed a valid source: %q", actual)
 	}
 }
 

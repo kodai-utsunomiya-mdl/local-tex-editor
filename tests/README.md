@@ -31,6 +31,7 @@ Windows のワークフローでは [r-lib/actions/setup-tinytex](https://github
 
 ```powershell
 npm ci
+npm run test:unit
 npm run build
 go test ./...
 go build -o bin/local-tex-editor.exe ./cmd/local-tex-editor

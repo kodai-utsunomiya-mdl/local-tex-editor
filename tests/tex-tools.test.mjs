@@ -15,6 +15,8 @@ test('outline follows multiline headings and ignores comments, examples, and esc
   補足 {A} の説明
 }
 \label{sec:appendix}
+\newcommand{\tagged}[1]{\label{#1}}
+\newcommand{\heading}[1]{\section{#1}}
 `;
   const headings = extractOutline(text);
   assert.deepEqual(headings.map(({ level, title, line }) => ({ level, title, line })), [
@@ -26,6 +28,7 @@ test('outline follows multiline headings and ignores comments, examples, and esc
     { key: 'sec:intro', path: '章/原稿.tex', line: 3, context: '日本語の 序論' },
     { key: 'sec:appendix', path: '章/原稿.tex', line: 11, context: '補足 A の説明' },
   ]);
+  assert.equal(extractOutline(String.raw`\section{実験 \#1}`)[0].title, '実験 #1');
 });
 
 test('bibliography completion reads nested titles, quoted fields, concatenation, and parentheses', () => {
@@ -65,6 +68,7 @@ test('citation and reference completion inserts at the current comma-separated k
   assert.equal(result.options[0].info, 'Another article\nref.bib:8');
   assert.equal(result.options[0].apply, 'beta2025');
   assert.deepEqual(invoke(String.raw`\Cref{sec:`).options.map(option => option.label), ['sec:intro']);
+  assert.deepEqual(invoke(String.raw`\ref*{sec:`).options.map(option => option.label), ['sec:intro']);
   assert.deepEqual(invoke(String.raw`\parencite{be`).options.map(option => option.label), ['alpha2026', 'beta2025']);
   assert.equal(invoke(String.raw`% \cite{be`), null);
   assert.equal(invoke(String.raw`\verb|\cite{be`), null);
@@ -80,10 +84,14 @@ C:\研究 論文\chapters\追加の 原稿.tex:27: Undefined control sequence.
 C:\研究 論文\chapters\追加の 原稿.tex:27: Undefined control sequence.
 C:\texlive\texmf-dist\tex\latex\unknown.sty:14: A package error.
 main.tex:0: Not a source line.
+../shared/main.tex:18: Error from another project.
+C:\another-project\main.tex:25: Error outside this project.
+Repeated entry---line 18 of file references.bib
 `;
-  assert.deepEqual(extractLogLocations(log, ['main.tex', { path: 'chapters/追加の 原稿.tex' }]), [
+  assert.deepEqual(extractLogLocations(log, ['main.tex', 'references.bib', { path: 'chapters/追加の 原稿.tex' }], String.raw`C:\研究 論文`), [
     { path: 'chapters/追加の 原稿.tex', line: 27, message: 'Undefined control sequence.' },
     { path: 'main.tex', line: 8, message: 'Missing $ inserted.' },
     { path: 'main.tex', line: 9, message: 'Another error.' },
+    { path: 'references.bib', line: 18, message: 'Repeated entry' },
   ]);
 });

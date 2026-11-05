@@ -77,6 +77,8 @@ PDF，対応する SyncTeX データ，原稿のハッシュと版の情報を�
 
 page は 1 始まり．x / y は該当箇所を囲むボックスの左上で，ページの左上を原点とする．座標と width / height の単位は PDF point (72 point = 1 inch)．該当箇所がなければ HTTP 200 と `locations: []` を返す．コンパイルに使った原稿と現在の保存済み原稿が異なる場合は `sourceChanged: true` とし，その PDF を作った時点の行に基づく位置を返す．UI 内の未保存の編集については UI でも確認する．
 
+空の結果には `reason` を添える．原稿が Input の一覧にない場合は `source-not-recorded`，CLI が該当箇所を返さなかった場合は `no-location` とする．
+
 ### POST /api/synctex/inverse
 
 入力 `{ "buildId":"表示中の PDF の版", "page":2, "x":95, "y":210 }`．PDF 上でダブルクリックした座標を forward と同じ単位・原点で送る．

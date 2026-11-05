@@ -73,6 +73,11 @@ function readable(text) {
     .replace(/\\([%&#_$])/g, '$1').replace(/[{}]/g, '').replace(/~/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function hasParameter(text) {
+  for (const match of text.matchAll(/#[1-9]/g)) if (!escaped(text, match.index)) return true;
+  return false;
+}
+
 function collectOutline(text, lineAt) {
   const levels = { part: 0, chapter: 1, section: 2, subsection: 3, subsubsection: 4, paragraph: 5, subparagraph: 6 };
   const pattern = /\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)(\*)?(?![A-Za-z@])/g;
@@ -87,6 +92,7 @@ function collectOutline(text, lineAt) {
     }
     const title = group(text, offset);
     if (!title) continue;
+    if (hasParameter(title.content)) { pattern.lastIndex = title.end; continue; }
     result.push({ level: levels[match[1]], title: readable(title.content), line: lineAt(match.index), from: match.index, to: title.end });
     pattern.lastIndex = title.end;
   }
@@ -103,7 +109,7 @@ function collectLabels(text, lineAt, outline, path) {
     while (heading + 1 < outline.length && outline[heading + 1].from < match.index) heading++;
     const context = outline[heading]?.from < match.index ? outline[heading].title : '';
     const key = value.content.trim();
-    if (key) result.push({ key, path, line: lineAt(match.index), from: match.index, context });
+    if (key && !hasParameter(key)) result.push({ key, path, line: lineAt(match.index), from: match.index, context });
     pattern.lastIndex = value.end;
   }
   return result;
@@ -188,7 +194,7 @@ export function texCompletionSource(getItems) {
   return context => {
     const start = Math.max(0, context.pos - 8192);
     const before = maskNonCode(context.state.doc.sliceString(start, context.pos));
-    const match = /\\([cC]ite[A-Za-z]*\*?|(?:paren|text|auto|foot|smart|super)cite[A-Za-z]*\*?|nocite|ref|eqref|autoref|[cC]ref|pageref|vref|nameref)(?:\s*\[[^\]]*\])*\s*\{([^{}]*)$/.exec(before);
+    const match = /\\([cC]ite[A-Za-z]*\*?|(?:paren|text|auto|foot|smart|super)cite[A-Za-z]*\*?|nocite|(?:ref|eqref|autoref|[cC]ref|pageref|vref|nameref)\*?)(?:\s*\[[^\]]*\])*\s*\{([^{}]*)$/.exec(before);
     if (!match || escaped(before, match.index)) return null;
     const list = match[2], comma = list.lastIndexOf(',');
     const part = list.slice(comma + 1), leading = /^\s*/.exec(part)[0].length;
@@ -210,20 +216,47 @@ export function texCompletionSource(getItems) {
   };
 }
 
-export function extractLogLocations(log, files = []) {
+function normalPath(path) {
+  const parts = [], value = path.replace(/\\/g, '/');
+  for (const part of value.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop();
+    else parts.push(part);
+  }
+  return (value.startsWith('/') ? '/' : '') + parts.join('/');
+}
+
+function relativeLogPath(path, root) {
+  const value = path.replace(/\\/g, '/').replace(/^"|"$/g, '');
+  const absolute = /^(?:[A-Za-z]:\/|\/)/.test(value);
+  if (!root) {
+    const relative = normalPath(value);
+    return absolute || relative === '..' || relative.startsWith('../') ? null : relative;
+  }
+  const base = normalPath(root).replace(/\/$/, '');
+  const complete = normalPath(absolute ? value : `${base}/${value}`);
+  const windows = /^[A-Za-z]:[\\/]/.test(root) || /^[\\/]{2}/.test(root);
+  const prefix = `${base}/`;
+  const inside = windows ? complete.toLowerCase().startsWith(prefix.toLowerCase()) : complete.startsWith(prefix);
+  return inside ? complete.slice(prefix.length) : null;
+}
+
+export function extractLogLocations(log, files = [], projectRoot = '') {
   const known = files.map(file => typeof file === 'string' ? file : file.path).filter(Boolean)
-    .map(path => ({ path, normalized: path.replace(/\\/g, '/').replace(/^\.\//, '') }))
+    .map(path => ({ path, normalized: normalPath(path) }))
     .sort((a, b) => b.normalized.length - a.normalized.length);
   const result = [], seen = new Set();
   for (const row of log.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)) {
     const match = /^\s*"?(.+?\.(?:tex|bib|sty|cls|ltx|cfg))"?:(\d+):\s*(.*)$/i.exec(row);
-    if (!match) continue;
-    const candidate = match[1].replace(/\\/g, '/').replace(/^\.\//, '').replace(/^"|"$/g, '');
-    const found = known.find(item => item.normalized === candidate || candidate.endsWith('/' + item.normalized)) ||
-      known.find(item => item.normalized.toLowerCase() === candidate.toLowerCase() || candidate.toLowerCase().endsWith('/' + item.normalized.toLowerCase()));
-    const line = Number(match[2]);
+    const bib = match ? null : /^(.*?)---line\s+(\d+)\s+of file\s+(.+?)\s*$/i.exec(row);
+    if (!match && !bib) continue;
+    const candidate = relativeLogPath(match ? match[1] : bib[3], projectRoot);
+    if (!candidate) continue;
+    const found = known.find(item => item.normalized === candidate) ||
+      (/^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(projectRoot) ? known.find(item => item.normalized.toLowerCase() === candidate.toLowerCase()) : null);
+    const line = Number((match || bib)[2]);
     if (!found || !Number.isSafeInteger(line) || line < 1) continue;
-    const message = match[3].trim(), key = `${found.path}:${line}:${message}`;
+    const message = (match ? match[3] : bib[1]).trim(), key = `${found.path}:${line}:${message}`;
     if (!seen.has(key)) { seen.add(key); result.push({ path: found.path, line, message }); }
     if (result.length >= 100) break;
   }

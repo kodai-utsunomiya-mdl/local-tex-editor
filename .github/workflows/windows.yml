@@ -81,7 +81,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'latexmk could not start.' }
           & (Join-Path $texBin 'upbibtex.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'upBibTeX could not start.' }
-          & (Join-Path $texBin 'synctex.exe') --version
+          & (Join-Path $texBin 'synctex.exe') help
           if ($LASTEXITCODE -ne 0) { throw 'SyncTeX could not start.' }
 
       - name: Install Chromium for browser tests

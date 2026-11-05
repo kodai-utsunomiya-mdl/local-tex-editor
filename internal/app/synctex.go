@@ -60,6 +60,7 @@ type forwardSyncResponse struct {
 	BuildID       string         `json:"buildId"`
 	Locations     []syncLocation `json:"locations"`
 	SourceChanged bool           `json:"sourceChanged"`
+	Reason        string         `json:"reason,omitempty"`
 }
 
 type inverseSyncRequest struct {
@@ -111,6 +112,7 @@ func (a *App) forwardSyncHandler(w http.ResponseWriter, r *http.Request) {
 	if source == nil {
 		// Files without typeset material, such as a bibliography database, do
 		// not necessarily have an Input record in this PDF's SyncTeX data.
+		response.Reason = "source-not-recorded"
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
@@ -129,6 +131,9 @@ func (a *App) forwardSyncHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.SourceChanged = syncSourceChanged(version, *source)
+	if len(response.Locations) == 0 {
+		response.Reason = "no-location"
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -313,7 +318,7 @@ func (a *App) cacheSyncTeX(root, originalPDF, cachedPDF, id, bin string, revisio
 	temp := out.Name()
 	defer os.Remove(temp)
 	compressed := gzip.NewWriter(out)
-	inputs, copyErr := normalizeSyncTeX(reader, compressed, root, revisions, recorderSources(root, stem+".fls"))
+	inputs, copyErr := normalizeSyncTeX(reader, compressed, root, revisions, recorderSources(root, stem+".fls", revisions))
 	if err := compressed.Close(); copyErr == nil {
 		copyErr = err
 	}
@@ -407,18 +412,23 @@ func normalizeSyncTeX(in io.Reader, out io.Writer, root string, revisions map[st
 	return inputs, nil
 }
 
-func recorderSources(root, path string) map[string]bool {
+func recorderSources(root, path string, revisions map[string]string) map[string]bool {
 	data, err := readBytes(path)
 	if err != nil {
 		return nil
 	}
+	return resolveRecorderSources(root, data, revisions, platform.EncodeFileName)
+}
+
+func resolveRecorderSources(root string, data []byte, revisions map[string]string, encode func(string) []byte) map[string]bool {
+	resolve := newSyncSourceResolver(root, revisions, nil, encode)
 	result := make(map[string]bool)
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		if !bytes.HasPrefix(line, []byte("INPUT ")) {
 			continue
 		}
-		name := platform.DecodeOutput(bytes.TrimSuffix(line[6:], []byte("\r")))
-		if path, err := syncProjectPath(root, name); err == nil {
+		name := string(bytes.TrimSuffix(line[6:], []byte("\r")))
+		if path := resolve(name); path != "" {
 			result[path] = true
 		}
 	}
