@@ -48,12 +48,14 @@ Windows のフォルダー選択ダイアログを開く．成功時 `{ "path": 
 ### GET /api/build
 
 ```json
-{"id":"...","status":"running","command":"...","log":"標準出力と標準エラー","exitCode":null,"error":"","startedAt":"ISO8601","finishedAt":"","pdfReady":false,"pdfBuildId":"","elapsedMs":0}
+{"id":"...","status":"running","command":"...","log":"標準出力と標準エラー","exitCode":null,"error":"","startedAt":"ISO8601","finishedAt":"","pdfReady":false,"pdfBuildId":"","synctexReady":false,"elapsedMs":0,"sourceChanged":false,"restored":false}
 ```
 
 build がまだない場合は `null`．status は `running`，`success`，`failed`，`cancelled`．ログは上限を設けるが，エラーの理由と終了コードは必ず返す．最後に成功した PDF がある場合は失敗後も pdfReady=true とし，UI に最新のコンパイルが失敗した旨を表示する．PDF の版は pdfBuildId で識別する．
 
 コンパイル開始後にアプリから保存が行われた場合は，`sourceChanged: true` を返す．画面は原稿が更新された旨を示す．
+
+`synctexReady` は `pdfBuildId` の PDF に対応する SyncTeX データがある場合に true．プロジェクトを開いた際に前回の PDF を読み込んだ場合は `restored: true`．その時点の原稿と保存された SHA-256 を比べ，変更があれば `sourceChanged: true` とする．
 
 ### POST /api/build/stop
 
@@ -63,9 +65,49 @@ build がまだない場合は `null`．status は `running`，`success`，`fail
 
 最後に成功した PDF のコピーを配信する．認証が必要．HTTP Range をサポートする．`?build=pdfBuildId` を指定すると，その版の同じ PDF を配信する．削除済みの版は HTTP 410 を返す．ファイルをコンパイル中に読む競合を避けるため，成功した PDF をアプリのキャッシュへコピーする．キャッシュはプロジェクトごとに現行版と直前の版までとする．
 
+PDF，対応する SyncTeX データ，原稿のハッシュと版の情報を設定フォルダーへ保存する．次の起動でも，同じプロジェクトの main / mode に対応する前回の PDF を再コンパイルせずに表示できる．キャッシュの不備がある場合もプロジェクトを開ける．
+
+### POST /api/synctex/forward
+
+入力 `{ "buildId":"表示中の PDF の版", "path":"章/原稿.tex", "line":42, "column":1 }`．path はプロジェクトからの相対パス．line / column は 1 始まりで，列が不明の場合は column を 0 とする．
+
+```json
+{"buildId":"...","locations":[{"page":2,"x":72,"y":204,"width":430,"height":12}],"sourceChanged":false}
+```
+
+page は 1 始まり．x / y は該当箇所を囲むボックスの左上で，ページの左上を原点とする．座標と width / height の単位は PDF point (72 point = 1 inch)．該当箇所がなければ HTTP 200 と `locations: []` を返す．コンパイルに使った原稿と現在の保存済み原稿が異なる場合は `sourceChanged: true` とし，その PDF を作った時点の行に基づく位置を返す．UI 内の未保存の編集については UI でも確認する．
+
+### POST /api/synctex/inverse
+
+入力 `{ "buildId":"表示中の PDF の版", "page":2, "x":95, "y":210 }`．PDF 上でダブルクリックした座標を forward と同じ単位・原点で送る．
+
+```json
+{"buildId":"...","path":"章/原稿.tex","line":42,"column":0,"sourceChanged":false}
+```
+
+path は `/` を使うプロジェクト内の相対パス．line は 1 始まり．column は 1 始まりで，不明の場合は 0．プロジェクト内の原稿に対応する位置がなければ HTTP 404．プロジェクト外の TeX パッケージのファイル等は返さない．
+
+両方の API は共通の token / Origin / プロジェクトの確認を受ける．削除済みの版は 410，SyncTeX データが未生成の場合は 404，synctex 実行ファイルが見つからない場合は 503，実行の失敗は 502，6 秒を超えた場合は 504．失敗時は `{ "error":"説明" }` を返し，CLI の実行に失敗した理由をコンパイルのログにも記す．
+
+CLI は PDF を生成した TeX Live の bin にある `synctex` を，シェルを介さず実行する．Windows の文字コードによるファイル名の変化を防ぐため，キャッシュにコピーする際に SyncTeX の Input 名を ASCII の名前にし，アプリ内で元の相対パスへ対応付ける．エンジンが Input 名を Windows の文字コードに変換している場合は，原稿の名前にも同じ変換を適用して照合する．recorder (`.fls`) が記録した原稿を使って候補を絞り，同じ表現になる名前が複数残る場合はその Input への移動を行わない．Input の番号，行，ページと座標は元のデータを使う．PDF と SyncTeX のファイルには同じ版の名前を付け，次のコンパイルで元のファイルが書き換わっても，表示中の PDF のデータを使って照合する．
+
+CLI の形式と座標は TeX Live の [synctex_main.c](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/synctexdir/synctex_main.c) の `synctex help view` / `synctex help edit` と出力処理に基づく．forward のボックスは CLI の h / v / W / H から x = h，y = v - H，width = W，height = H とする (負の寸法は向きに合わせて左上と正の幅へ直す)．Input 名を置き換えた際の byte 数は [synctex.c](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/synctexdir/synctex.c) の `synctex_record_anchor` に従って更新する．
+
 ### POST /api/shutdown
 
 コンパイルを停止し，`{"ok":true}` を返してサーバーを終了する．UI は未保存の編集がある場合に確認する．
+
+### GET /api/storage?key=文字列
+
+UI の設定や草稿を `{ "value":... }` として読み込む．未登録の場合は `{ "value":null }`．キーはパスとして扱わず，SHA-256 をファイル名にして設定フォルダーの `ui-state` に保存する．アプリの次回起動で localhost のポートが変わっても，同じキーから読み込める．
+
+### PUT /api/storage
+
+入力 `{ "key":"文字列", "value":... }`．JSON の上限は 16 MiB．同じフォルダーの一時ファイルに書き込み，完成した内容で置き換える．token，Origin，Host の確認は他の API と共通．`X-Project-Root` は参照しないため，プロジェクトを切り替えた直後も元のプロジェクトのキーへ草稿を保存できる．
+
+### DELETE /api/storage?key=文字列
+
+指定したキーの値を削除し，`{ "ok":true }` を返す．保存済みの原稿ファイルには変更を加えない．
 
 ## CLI と動作確認
 

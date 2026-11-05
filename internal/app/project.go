@@ -146,6 +146,8 @@ func (a *App) openProjectLocked(rawPath string) error {
 	a.lastPDF, a.lastPDFID = "", ""
 	a.pdfVersions = make(map[string]string)
 	a.pdfOrder = nil
+	a.synctexVersions = make(map[string]*synctexVersion)
+	a.restoreCachedBuildLocked(*a.project)
 	return nil
 }
 

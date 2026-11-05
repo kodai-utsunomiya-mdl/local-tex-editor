@@ -19,8 +19,11 @@ await build({
 });
 await cp(path.join(root, 'web/src/index.html'), path.join(out, 'index.html'));
 await cp(path.join(root, 'web/src/style.css'), path.join(out, 'style.css'));
+await cp(path.join(root, 'web/src/pdf-search.css'), path.join(out, 'pdf-search.css'));
 const pdf = path.join(root, 'node_modules/pdfjs-dist');
 await cp(path.join(pdf, 'build/pdf.worker.min.mjs'), path.join(out, 'pdf.worker.min.mjs'));
+await cp(path.join(pdf, 'web/pdf_viewer.css'), path.join(out, 'pdf_viewer.css'));
+await cp(path.join(pdf, 'web/images'), path.join(out, 'images'), { recursive: true });
 for (const folder of ['cmaps', 'standard_fonts', 'wasm']) {
   await cp(path.join(pdf, folder), path.join(out, folder), { recursive: true });
 }

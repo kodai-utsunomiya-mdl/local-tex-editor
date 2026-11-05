@@ -1,12 +1,15 @@
-import { EditorState, Compartment, Prec } from '@codemirror/state';
-import { EditorView, keymap } from '@codemirror/view';
+import { EditorState, Compartment, Prec, StateEffect, StateField } from '@codemirror/state';
+import { EditorView, keymap, Decoration } from '@codemirror/view';
 import { basicSetup } from 'codemirror';
 import { indentWithTab } from '@codemirror/commands';
-import { StreamLanguage } from '@codemirror/language';
+import { StreamLanguage, HighlightStyle, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { openSearchPanel } from '@codemirror/search';
 import { autocompletion } from '@codemirror/autocomplete';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { PDFViewer } from './pdf-viewer.js';
+import { tags } from '@lezer/highlight';
+import { SessionStore } from './session-store.js';
+import { extractTexMetadata, extractCitations, texCompletionSource, extractLogLocations } from './tex-tools.js';
 
 const $ = id => document.getElementById(id);
 const TOKEN_KEY = 'local-tex-editor-token';
@@ -38,10 +41,52 @@ const state = {
   connected: false,
   externalProjectChanged: false,
   reportedBuild: '',
+  preferences: { autoSave: true, theme: null },
+  theme: 'light',
+  saveQueue: Promise.resolve(),
+  autoSaveTimer: null,
+  draftTimer: null,
+  sessionTimer: null,
+  outlineTimer: null,
+  persistenceReady: false,
+  initialFilePending: false,
+  session: null,
+  drafts: { entries: [] },
+  recoverySelection: null,
+  sidebar: 'files',
+  texIndex: new Map(),
+  completionItems: { citations: [], labels: [] },
+  indexing: false,
+  syncing: false,
 };
 const readOnly = new Compartment();
+const editorTheme = new Compartment();
 const modeLabels = { project: 'latexmkrc', pdflatex: 'pdfLaTeX', uplatex: 'upLaTeX', xelatex: 'XeLaTeX', lualatex: 'LuaLaTeX' };
 let toastTimer = null;
+let lineFlashTimer = null;
+const lineFlash = StateEffect.define();
+const lineFlashField = StateField.define({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    value = value.map(transaction.changes);
+    for (const effect of transaction.effects) if (effect.is(lineFlash)) {
+      value = effect.value == null ? Decoration.none : Decoration.set([Decoration.line({ class: 'synctex-line' }).range(transaction.state.doc.line(Math.min(transaction.state.doc.lines, Math.max(1, effect.value))).from)]);
+    }
+    return value;
+  },
+  provide: field => EditorView.decorations.from(field),
+});
+const darkHighlight = HighlightStyle.define([
+  { tag: tags.keyword, color: '#c4a7f0' },
+  { tag: [tags.name, tags.variableName], color: '#b5d5e7' },
+  { tag: [tags.typeName, tags.className, tags.propertyName], color: '#83cbd1' },
+  { tag: [tags.string, tags.special(tags.string)], color: '#a4d6a3' },
+  { tag: [tags.number, tags.bool, tags.atom], color: '#efbd8b' },
+  { tag: tags.comment, color: '#8a9eae' },
+  { tag: [tags.operator, tags.punctuation], color: '#a8bbca' },
+  { tag: tags.meta, color: '#dcaa82' },
+  { tag: tags.invalid, color: '#ff9aa5' },
+]);
 
 class APIError extends Error {
   constructor(message, status = 0) { super(message); this.name = 'APIError'; this.status = status; }
@@ -115,16 +160,19 @@ function setOperation(operation) {
   state.operation = operation;
   if (state.editor) state.editor.dispatch({ effects: readOnly.reconfigure([EditorState.readOnly.of(!!operation), EditorView.editable.of(!operation)]) });
   renderControls();
+  if (!operation) scheduleAutoSave();
 }
 
 function updateCursor() {
   const view = state.editor;
-  if (!view || !state.activePath) { $('cursor-status').textContent = ''; $('document-encoding').textContent = ''; return; }
+  if (!view || !state.activePath) { $('cursor-status').textContent = ''; $('document-encoding').textContent = ''; delete $('editor').dataset.path; delete $('editor').dataset.line; delete $('editor').dataset.column; return; }
   const head = view.state.selection.main.head;
   const line = view.state.doc.lineAt(head);
   $('cursor-status').textContent = `${line.number} 行，${head - line.from + 1} 列`;
+  $('editor').dataset.path = state.activePath; $('editor').dataset.line = String(line.number); $('editor').dataset.column = String(head - line.from + 1);
   const doc = activeDocument();
   $('document-encoding').textContent = `UTF-8 · ${doc?.lineEnding === 'crlf' ? 'CRLF' : 'LF'}`;
+  updateOutlinePosition(); scheduleSession();
 }
 
 const latexWords = [
@@ -164,11 +212,19 @@ function makeEditorState(path, content) {
   return EditorState.create({ doc: normalise(content), extensions: [
     basicSetup,
     language,
+    editorTheme.of(themeExtension()),
+    lineFlashField,
     EditorView.lineWrapping,
     readOnly.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
     EditorView.contentAttributes.of({ 'aria-label': '原稿エディタ', spellcheck: 'false', autocapitalize: 'off', autocorrect: 'off' }),
     EditorState.phrases.of({ 'Find': '検索', 'Replace': '置換', 'next': '次', 'previous': '前', 'all': 'すべて', 'match case': '大文字と小文字を区別', 'by word': '単語単位', 'regexp': '正規表現', 'replace': '置換', 'replace all': 'すべて置換', 'close': '閉じる', 'Go to line': '行へ移動', 'go': '移動', 'Fold line': '折りたたむ', 'Unfold line': '展開' }),
-    autocompletion({ override: /^(tex|sty|cls|ltx)$/.test(extension) ? [latexCompletion] : [] }),
+    autocompletion({ override: /^(tex|sty|cls|ltx)$/.test(extension) ? [texCompletionSource(() => state.completionItems), latexCompletion] : [] }),
+    EditorView.domEventHandlers({ mousedown(event, view) {
+      if (!(event.ctrlKey || event.metaKey) || event.button !== 0 || view.composing) return false;
+      const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (position == null) return false;
+      event.preventDefault(); view.dispatch({ selection: { anchor: position } }); runTask(() => syncForward(position)); return true;
+    } }),
     keymap.of([indentWithTab]),
     Prec.highest(keymap.of([
       { key: 'Mod-s', run: view => { if (view.composing) return false; runTask(saveCurrent); return true; } },
@@ -178,7 +234,7 @@ function makeEditorState(path, content) {
     EditorView.updateListener.of(update => {
       const doc = activeDocument();
       if (doc) doc.state = update.state;
-      if (update.docChanged && doc) { updateDocumentIndicators(doc); updatePreviewNote(); }
+      if (update.docChanged && doc) { updateDocumentIndicators(doc); updatePreviewNote(); queueDrafts(); scheduleAutoSave(); scheduleIndex(doc); }
       if (update.selectionSet || update.docChanged) updateCursor();
     }),
   ] });
@@ -186,15 +242,18 @@ function makeEditorState(path, content) {
 
 function makeDocument(file) {
   const editorState = makeEditorState(file.path, file.content);
-  return { path: file.path, revision: file.revision, lineEnding: file.lineEnding || 'lf', state: editorState, savedDoc: editorState.doc, saving: null, conflict: null };
+  return { path: file.path, revision: file.revision, lineEnding: file.lineEnding || 'lf', state: editorState, savedDoc: editorState.doc, saving: null, conflict: null, draftId: crypto.randomUUID(), visited: false };
 }
 
 function selectDocument(doc) {
+  const position = !doc.visited ? state.session?.positions?.[doc.path] : null;
+  if (position) doc.state = doc.state.update({ selection: { anchor: Math.min(doc.state.doc.length, Math.max(0, Number(position.anchor) || 0)), head: Math.min(doc.state.doc.length, Math.max(0, Number(position.head) || 0)) } }).state;
+  doc.visited = true;
   state.activePath = doc.path;
   $('editor').hidden = false;
   $('editor-empty').hidden = true;
   if (state.editor) state.editor.setState(doc.state);
-  else state.editor = new EditorView({ state: doc.state, parent: $('editor') });
+  else { state.editor = new EditorView({ state: doc.state, parent: $('editor') }); state.editor.scrollDOM.addEventListener('scroll', scheduleSession, { passive: true }); }
   renderTabs();
   for (const [path, button] of state.treeButtons) { button.classList.toggle('active', path === doc.path); button.setAttribute('aria-current', path === doc.path ? 'true' : 'false'); }
   $('active-filename').textContent = doc.path;
@@ -202,6 +261,9 @@ function selectDocument(doc) {
   updateDocumentIndicators(doc);
   updateCursor();
   state.editor.focus();
+  if (position) { const view = state.editor; requestAnimationFrame(() => { if (state.editor === view && state.activePath === doc.path) { view.scrollDOM.scrollTop = Math.max(0, Number(position.scrollTop) || 0); view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: 'nearest' }) }); } }); }
+  if (/\.(tex|bib)$/i.test(doc.path) && doc.indexedDoc !== doc.state.doc) updateIndex(doc.path, doc.state.doc.toString());
+  renderRecovery(); scheduleSession();
   document.title = `${isDirty(doc) ? '● ' : ''}${basename(doc.path)} — Local TeX Editor`;
 }
 
@@ -310,8 +372,11 @@ async function saveDocument(doc) {
   if (!isDirty(doc)) return true;
   const snapshot = doc.state.doc;
   const generation = state.projectGeneration;
+  const preceding = state.saveQueue;
   const promise = (async () => {
     try {
+      await preceding;
+      if (generation !== state.projectGeneration) return false;
       const result = await api('/api/file', { method: 'PUT', body: { path: doc.path, content: snapshot.toString(), revision: doc.revision } });
       if (generation !== state.projectGeneration) return false;
       doc.revision = result.revision;
@@ -320,6 +385,7 @@ async function saveDocument(doc) {
       doc.conflict = null;
       if (state.build) state.build.sourceChanged = true;
       updatePreviewNote();
+      syncDrafts();
       return true;
     } catch (error) {
       if (error.status === 409) doc.conflict = error;
@@ -332,6 +398,7 @@ async function saveDocument(doc) {
     }
   })();
   doc.saving = promise;
+  state.saveQueue = promise.catch(() => {});
   updateDocumentIndicators(doc);
   return promise;
 }
@@ -346,6 +413,7 @@ async function saveAll() {
 async function saveCurrent() {
   if (state.operation || !activeDocument()) return;
   const doc = activeDocument();
+  if (doc.conflict) { await resolveConflict(doc); return; }
   if (doc.saving) await doc.saving;
   if (!isDirty(doc)) { toast('保存済みです．'); return; }
   await saveDocument(doc);
@@ -381,9 +449,10 @@ function choose({ title, description, primary = '保存して続ける', seconda
 async function confirmUnsaved(description) {
   const pending = [...state.documents.values()].map(doc => doc.saving).filter(Boolean);
   await Promise.allSettled(pending);
+  syncDrafts(); persistSession(); await sessionStore.flush();
   const dirty = dirtyDocuments();
   if (!dirty.length) return true;
-  const answer = await choose({ title: '未保存の変更があります', description: `${dirty.map(doc => doc.path).join('\n')}\n\n${description}` });
+  const answer = await choose({ title: '未保存の変更があります', description: `${dirty.map(doc => doc.path).join('\n')}\n\n${description}`, secondary: '草稿に残して続ける' });
   if (answer === 'cancel') return false;
   if (answer === 'primary') await saveAll();
   return true;
@@ -396,6 +465,7 @@ async function closeDocument(doc) {
     const answer = await choose({ title: '未保存のファイルを閉じますか？', description: doc.path, primary: '保存して閉じる', secondary: '保存せずに閉じる' });
     if (answer === 'cancel') return;
     if (answer === 'primary') { await saveDocument(doc); if (isDirty(doc)) return; }
+    else removeDraft(doc.draftId);
   }
   const paths = [...state.documents.keys()]; const index = paths.indexOf(doc.path);
   state.documents.delete(doc.path);
@@ -408,7 +478,7 @@ async function closeDocument(doc) {
       $('save-status').textContent = ''; $('conflict-banner').hidden = true; updateCursor(); document.title = 'Local TeX Editor';
     }
   }
-  renderTabs(); renderTree(); renderControls(); updatePreviewNote();
+  renderTabs(); renderTree(); renderControls(); updatePreviewNote(); persistSession();
 }
 
 async function resolveConflict(doc) {
@@ -434,7 +504,7 @@ async function resolveConflict(doc) {
     const transaction = doc.state.update({ changes: { from: 0, to: doc.state.doc.length, insert: content } });
     doc.savedDoc = transaction.state.doc;
     if (state.activePath === doc.path) state.editor.update([transaction]); else doc.state = transaction.state;
-    clearError(); updateDocumentIndicators(doc); updatePreviewNote(); toast('ディスクの内容を読み込みました．');
+    clearError(); updateDocumentIndicators(doc); updatePreviewNote(); syncDrafts(); toast('ディスクの内容を読み込みました．');
   } else {
     doc.revision = remote.revision;
     doc.savedDoc = EditorState.create({ doc: normalise(remote.content) }).doc;
@@ -467,10 +537,14 @@ async function applyMeta(meta, resetProject = false) {
     handleExternalProjectChange();
     return;
   }
+  if (resetProject && state.persistenceReady) { syncDrafts(); persistSession(); }
   const generation = resetProject ? ++state.projectGeneration : state.projectGeneration;
   state.meta = meta;
   state.externalProjectChanged = false;
   if (resetProject) {
+    clearTimeout(state.autoSaveTimer); clearTimeout(state.draftTimer); clearTimeout(state.sessionTimer); clearTimeout(state.outlineTimer);
+    state.persistenceReady = false; state.initialFilePending = !!meta.project; state.session = null; state.drafts = { entries: [] }; state.recoverySelection = null;
+    state.texIndex.clear(); state.completionItems = { citations: [], labels: [] }; state.indexError = ''; state.indexing = false;
     clearTimeout(state.pollTimer); state.pollTimer = null;
     state.documents.clear(); state.pendingFiles.clear(); state.activePath = ''; ++state.openSequence;
     state.editor?.destroy(); state.editor = null; $('editor').replaceChildren(); $('editor').hidden = true; $('editor-empty').hidden = false;
@@ -479,18 +553,18 @@ async function applyMeta(meta, resetProject = false) {
   }
   if (generation !== state.projectGeneration) return;
   const project = meta.project;
+  if (project && resetProject) await loadProjectSession(project.root, generation);
+  if (generation !== state.projectGeneration) return;
   $('welcome').hidden = !!project; $('workbench').hidden = !project;
   $('project-name').textContent = project ? basename(project.root) : 'プロジェクトを開く';
   $('project-name').title = project?.root || '';
   $('project-root').textContent = project?.root || ''; $('project-root').title = project?.root || '';
   $('app-version').textContent = meta.version ? `v${meta.version}` : '';
   $('main-document-label').textContent = project ? `${project.main || 'メイン文書を選択'} · ${modeLabels[project.mode] || project.mode}` : 'メイン文書を選択';
-  renderRecent(); renderTree(); renderTabs(); renderControls(); updateCursor();
+  renderRecent(); renderTree(); renderTabs(); renderControls(); updateCursor(); renderOutline(); renderRecovery();
   applyBuild(meta.build);
-  if (project && !state.activePath && !state.operation) {
-    const file = project.files?.find(file => file.path === project.main) || project.files?.find(file => /\.tex$/i.test(file.path)) || project.files?.[0];
-    if (file) await openFile(file.path);
-  }
+  if (project && resetProject) runTask(() => indexProject());
+  await openInitialFile();
 }
 
 function showProjectDialog() {
@@ -525,10 +599,7 @@ async function openProject(event) {
   } catch (error) { $('project-error').textContent = error.message || String(error); $('project-error').hidden = false; }
   finally {
     setDialogBusy(dialog, false); setOperation('');
-    if (state.meta?.project && !state.activePath) {
-      const file = state.meta.project.files?.find(file => file.path === state.meta.project.main) || state.meta.project.files?.[0];
-      if (file) runTask(() => openFile(file.path));
-    }
+    runTask(openInitialFile);
   }
 }
 
@@ -552,6 +623,7 @@ function showSettings() {
   if (project?.main && ![...$('main-file').options].some(option => option.value === project.main)) { const option = document.createElement('option'); option.value = project.main; option.textContent = project.main; $('main-file').append(option); }
   $('main-file').value = project?.main || '';
   $('compile-mode').value = project?.mode || 'pdflatex';
+  $('autosave-setting').checked = state.preferences.autoSave;
   $('main-field').hidden = !project; $('mode-field').hidden = !project;
   $('settings-error').hidden = true; $('settings-dialog').showModal();
 }
@@ -561,7 +633,11 @@ async function saveSettings(event) {
   const body = { texBin: $('tex-bin').value.trim() };
   if (state.meta?.project) { body.main = $('main-file').value; body.mode = $('compile-mode').value; }
   setOperation('settings'); setDialogBusy($('settings-dialog'), true); $('settings-error').hidden = true;
-  try { const meta = await api('/api/settings', { method: 'PUT', body }); await applyMeta(meta); $('settings-dialog').close(); clearError(); toast('設定を保存しました．'); }
+  try {
+    const meta = await api('/api/settings', { method: 'PUT', body }); await applyMeta(meta);
+    state.preferences.autoSave = $('autosave-setting').checked; savePreferences(); await sessionStore.flush();
+    $('settings-dialog').close(); clearError(); updateAutoSaveStatus(); toast('設定を保存しました．');
+  }
   catch (error) { $('settings-error').textContent = error.message || String(error); $('settings-error').hidden = false; }
   finally { setDialogBusy($('settings-dialog'), false); setOperation(''); }
 }
@@ -570,7 +646,7 @@ async function refreshFiles() {
   if (state.operation || !state.meta?.project) return;
   const meta = await api('/api/state');
   if (meta.project?.root !== state.meta.project.root) { handleExternalProjectChange(); return; }
-  await applyMeta(meta); toast('ファイル一覧を更新しました．');
+  await applyMeta(meta); await indexProject(true); toast('ファイル一覧を更新しました．');
 }
 
 async function createFile(event) {
@@ -605,7 +681,7 @@ function updatePreviewNote() {
   else if (build.status === 'cancelled') { note.textContent = 'コンパイルを停止しました．前回成功した PDF を表示しています．'; label.textContent = '前回の PDF'; }
   else if (build.status === 'running') { note.textContent = 'コンパイル中です．完了すると PDF が更新されます．'; label.textContent = '更新待ち'; }
   else if (build.sourceChanged || dirtyDocuments().length) { note.textContent = '原稿に変更があります．最新の内容を確認するにはコンパイルしてください．'; label.textContent = '原稿に変更あり'; }
-  else { label.textContent = viewer.document && viewer.buildId === build.pdfBuildId ? '更新済み' : '読み込み中'; return; }
+  else { label.textContent = viewer.hasRendered && viewer.buildId === build.pdfBuildId ? '更新済み' : '読み込み中'; return; }
   note.hidden = false; label.classList.add('stale');
 }
 
@@ -614,6 +690,7 @@ function applyBuild(build) {
     if (build.id === state.build.id && state.build.status !== 'running' && build.status === 'running') return;
     if (build.id !== state.build.id && Date.parse(build.startedAt) < Date.parse(state.build.startedAt)) return;
   }
+  const previouslyRunning = isRunning();
   state.build = build || null;
   const labels = { running: 'コンパイル中', success: 'コンパイル完了', failed: 'コンパイル失敗', cancelled: '停止しました' };
   $('build-status').textContent = labels[build?.status] || 'コンパイル前';
@@ -625,7 +702,7 @@ function applyBuild(build) {
     state.fullLog = text || 'プロセスからの出力を待っています…';
     const output = $('build-log'); const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 55;
     const displayed = state.fullLog.length > 300000 ? `ログの末尾 300,000 文字を表示しています．「コピー」で受け取ったログ全体を取得できます．\n\n${state.fullLog.slice(-300000)}` : state.fullLog;
-    if (output.textContent !== displayed) { output.textContent = displayed; if (follow) output.scrollTop = output.scrollHeight; }
+    if (output.textContent !== displayed) { output.textContent = displayed; if (follow) output.scrollTop = output.scrollHeight; renderLogLocations(); }
     const exit = Number.isInteger(build.exitCode) ? `終了コード ${build.exitCode}` : '実行中';
     $('log-meta').textContent = `${exit}${build.finishedAt ? ` · ${formatElapsed(build.elapsedMs || 0)}` : ''}`;
     if (build.status === 'failed' && state.reportedBuild !== `${build.id}:failed`) {
@@ -637,9 +714,12 @@ function applyBuild(build) {
     else { clearTimeout(state.pollTimer); state.pollTimer = null; }
   } else {
     state.fullLog = ''; $('build-log').textContent = 'コンパイルすると，ここにコマンドとログが表示されます．'; $('log-meta').textContent = '';
+    renderLogLocations();
     if (viewer.document || viewer.loadingTask) viewer.reset().catch(error => showError(error));
   }
   updatePreviewNote(); renderControls();
+  updateAutoSaveStatus();
+  if (previouslyRunning && !isRunning()) scheduleAutoSave();
 }
 
 function schedulePoll(delay) {
@@ -694,6 +774,8 @@ function renderControls() {
   $('stop-button').hidden = !running; $('stop-button').disabled = busy || !running;
   $('save-button').disabled = busy || !doc || !!doc.saving || !isDirty(doc) || state.externalProjectChanged;
   $('find-button').disabled = !doc || state.closed;
+  $('synctex-forward').disabled = busy || state.syncing || !doc || !viewer.ready || !state.build?.synctexReady || state.externalProjectChanged;
+  $('synctex-forward').title = state.build?.synctexReady ? 'カーソル位置を PDF で表示 (Ctrl+クリックでも移動)' : 'SyncTeX を使うには，このアプリで PDF をコンパイルしてください．';
   $('main-document').disabled = busy || !project || running;
   $('settings-button').disabled = busy || running;
   $('show-project').disabled = busy || running;
@@ -703,6 +785,7 @@ function renderControls() {
   $('refresh-files').disabled = busy || !project;
   $('download-pdf').disabled = !state.build?.pdfReady || state.closed;
   $('copy-log').disabled = !state.fullLog;
+  $('theme-toggle').disabled = state.closed;
   for (const button of state.treeButtons.values()) button.disabled = busy;
   for (const tab of state.tabElements.values()) { tab.button.disabled = busy; tab.close.disabled = busy; }
 }
@@ -757,6 +840,7 @@ async function shutdown() {
       const answer = await choose({ title: 'コンパイルを停止して終了しますか？', description: '実行中の TeX とローカルのアプリを終了します．', primary: '停止して終了', secondary: '' });
       if (answer !== 'primary') return;
     }
+    syncDrafts(); persistSession(); await sessionStore.flush();
     await api('/api/shutdown', { method: 'POST', body: {}, timeout: 30000 });
     state.closed = true; clearTimeout(state.pollTimer); clearInterval(state.heartbeat); setConnected(false);
     try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* No persistent storage is required. */ }
@@ -768,17 +852,376 @@ async function shutdown() {
   } finally { setOperation(state.closed ? 'closed' : ''); }
 }
 
+const sessionStore = new SessionStore(api, (status, key, error) => {
+  if (key.startsWith('drafts:') && key === `drafts:${state.meta?.project?.root}`) {
+    $('draft-status').dataset.status = status;
+    $('draft-status').textContent = status === 'saving' ? '草稿を保存中…' : status === 'saved' ? '草稿を PC に記録済み' : '草稿の記録を確認';
+  }
+  if (error) {
+    const item = key.startsWith('drafts:') ? '草稿' : key.startsWith('session:') ? '編集位置' : '設定';
+    showError(new Error(`${item}を記録できませんでした．${error.message || error}`), { label: '再保存', run: () => sessionStore.flush() });
+  }
+});
+
+function themeExtension() {
+  const dark = state.theme === 'dark';
+  return [EditorView.theme({}, { dark }), syntaxHighlighting(dark ? darkHighlight : defaultHighlightStyle)];
+}
+function applyTheme(theme, persist = false) {
+  state.theme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = state.theme;
+  $('theme-toggle').setAttribute('aria-pressed', String(state.theme === 'dark'));
+  $('theme-toggle').setAttribute('aria-label', state.theme === 'dark' ? 'ライトテーマに切り替える' : 'ダークテーマに切り替える');
+  $('theme-label').textContent = state.theme === 'dark' ? 'ダーク' : 'ライト';
+  try { localStorage.setItem('local-tex-editor-theme', state.theme); } catch { /* The PC copy is written through the storage API. */ }
+  for (const doc of state.documents.values()) {
+    const transaction = doc.state.update({ effects: editorTheme.reconfigure(themeExtension()) });
+    if (doc.path === state.activePath && state.editor) state.editor.update([transaction]); else doc.state = transaction.state;
+  }
+  if (persist) { state.preferences.theme = state.theme; savePreferences(); }
+}
+function savePreferences() { sessionStore.write('preferences', { ...state.preferences, updatedAt: Date.now() }, 0); }
+async function loadPreferences() {
+  const preferences = await sessionStore.read('preferences');
+  if (preferences && typeof preferences === 'object') {
+    state.preferences.autoSave = preferences.autoSave !== false;
+    state.preferences.theme = ['light', 'dark'].includes(preferences.theme) ? preferences.theme : null;
+  }
+  if (state.preferences.theme) applyTheme(state.preferences.theme);
+  updateAutoSaveStatus();
+}
+function updateAutoSaveStatus() { $('autosave-status').textContent = state.preferences.autoSave ? (isRunning() ? '自動保存はコンパイル後' : '自動保存オン') : '手動で保存'; }
+function scheduleAutoSave() {
+  clearTimeout(state.autoSaveTimer);
+  updateAutoSaveStatus();
+  if (!state.preferences.autoSave || state.closed || !state.persistenceReady) return;
+  state.autoSaveTimer = setTimeout(() => runTask(async () => {
+    if (state.operation || isRunning() || state.externalProjectChanged || document.querySelector('dialog[open]')) return;
+    for (const doc of state.documents.values()) {
+      if (state.operation || isRunning() || state.closed) break;
+      if (isDirty(doc) && !doc.conflict) await saveDocument(doc);
+    }
+  }), 1600);
+}
+
+function queueDrafts() {
+  if (!state.persistenceReady || !state.meta?.project || state.closed) return;
+  clearTimeout(state.draftTimer);
+  $('draft-status').dataset.status = 'saving'; $('draft-status').textContent = '草稿を保存中…';
+  state.draftTimer = setTimeout(syncDrafts, 450);
+}
+function syncDrafts() {
+  clearTimeout(state.draftTimer); state.draftTimer = null;
+  if (!state.persistenceReady || !state.meta?.project || state.closed) return;
+  const entries = new Map((state.drafts.entries || []).map(entry => [entry.id, entry]));
+  let changed = false;
+  for (const doc of state.documents.values()) {
+    if (isDirty(doc)) {
+      const content = doc.state.doc.toString();
+      const previous = entries.get(doc.draftId);
+      if (previous?.content === content && previous.baseRevision === doc.revision) continue;
+      entries.set(doc.draftId, { id: doc.draftId, path: doc.path, baseRevision: doc.revision, content, updatedAt: Date.now(), selection: { anchor: doc.state.selection.main.anchor, head: doc.state.selection.main.head } });
+      changed = true;
+    } else if (entries.delete(doc.draftId)) changed = true;
+  }
+  if (!changed) {
+    if (!sessionStore.pending) { $('draft-status').dataset.status = 'saved'; $('draft-status').textContent = '草稿を PC に記録済み'; }
+    return;
+  }
+  state.drafts = { version: 1, updatedAt: Date.now(), entries: [...entries.values()] };
+  sessionStore.write(`drafts:${state.meta.project.root}`, state.drafts, 0);
+  renderRecovery();
+}
+function removeDraft(id) {
+  if (!state.meta?.project) return;
+  state.drafts = { version: 1, updatedAt: Date.now(), entries: state.drafts.entries.filter(entry => entry.id !== id) };
+  sessionStore.write(`drafts:${state.meta.project.root}`, state.drafts, 0);
+  renderRecovery();
+}
+function availableDrafts() {
+  const current = new Set([...state.documents.values()].map(doc => doc.draftId));
+  return (state.drafts.entries || []).filter(entry => !current.has(entry.id)).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+function renderRecovery() {
+  const count = availableDrafts().length;
+  $('recovery-banner').hidden = !count;
+  $('recovery-summary').textContent = `前回保存しなかった草稿が ${count} 件あります．`;
+}
+async function showRecovery() {
+  const entries = availableDrafts();
+  if (!entries.length) return;
+  $('recovery-file').replaceChildren();
+  for (const entry of entries) {
+    const option = document.createElement('option'); option.value = entry.id;
+    option.textContent = `${entry.path} · ${new Date(entry.updatedAt).toLocaleString('ja-JP')}`;
+    $('recovery-file').append(option);
+  }
+  $('recovery-error').hidden = true; $('recovery-dialog').showModal();
+  await inspectDraft();
+}
+async function diskForDraft(entry) {
+  try { return await api(`/api/file?path=${encodeURIComponent(entry.path)}`); }
+  catch (error) { if (error.status === 404) return { path: entry.path, content: '', revision: '', lineEnding: 'lf', missing: true }; throw error; }
+}
+async function inspectDraft() {
+  const entry = state.drafts.entries.find(item => item.id === $('recovery-file').value);
+  if (!entry) return;
+  const dialog = $('recovery-dialog');
+  setDialogBusy(dialog, true); $('recovery-error').hidden = true;
+  try {
+    const disk = await diskForDraft(entry);
+    state.recoverySelection = entry;
+    $('recovery-disk').value = disk.content; $('recovery-draft').value = entry.content;
+    $('recovery-description').textContent = disk.missing ? 'ディスク上のファイルがありません．草稿を開き，保存するとファイルを作成できます．' : disk.revision === entry.baseRevision ? '草稿を記録したときから，ディスクの内容は変わっていません．草稿をエディタで開いて作業を再開できます．' : '草稿を記録した後に，ディスクの内容が変更されています．草稿を開いた後，保存する内容を確認してください．';
+  } catch (error) { $('recovery-error').textContent = error.message || String(error); $('recovery-error').hidden = false; }
+  finally { setDialogBusy(dialog, false); }
+}
+async function restoreDraft() {
+  const entry = state.recoverySelection;
+  if (!entry || state.operation) return;
+  const previous = state.documents.get(entry.path);
+  if (previous && isDirty(previous) && previous.state.doc.toString() !== entry.content) {
+    syncDrafts(); await sessionStore.flush();
+    const answer = await choose({ title: '編集中の内容を草稿に記録しました', description: `${entry.path} の編集内容を残して，選んだ草稿を開きますか？`, primary: '選んだ草稿を開く', secondary: '' });
+    if (answer !== 'primary') return;
+  }
+  const remote = await diskForDraft(entry);
+  const doc = makeDocument(remote);
+  doc.draftId = entry.id; doc.revision = entry.baseRevision || '';
+  const content = normalise(entry.content);
+  doc.state = doc.state.update({ changes: { from: 0, to: doc.state.doc.length, insert: content }, selection: { anchor: Math.min(content.length, Math.max(0, entry.selection?.anchor || 0)), head: Math.min(content.length, Math.max(0, entry.selection?.head || 0)) } }).state;
+  doc.visited = true;
+  if (remote.revision !== doc.revision) doc.conflict = new APIError('草稿を記録した後にディスクの内容が変更されています．保存する内容を確認してください．', 409);
+  state.documents.set(doc.path, doc);
+  $('recovery-dialog').close(); switchView(false); selectDocument(doc);
+  state.editor.dispatch({ effects: EditorView.scrollIntoView(state.editor.state.selection.main.head, { y: 'center' }) });
+  updateIndex(doc.path, doc.state.doc.toString());
+  syncDrafts(); renderRecovery(); scheduleAutoSave();
+  toast(doc.conflict ? '草稿を開きました．保存の前に，ディスクの内容との比較を確認してください．' : '草稿を開きました．');
+}
+async function deleteSelectedDraft() {
+  const id = $('recovery-file').value;
+  removeDraft(id); await sessionStore.flush();
+  $('recovery-dialog').close();
+  if (availableDrafts().length) await showRecovery();
+}
+
+function scheduleSession() {
+  if (!state.persistenceReady || !state.meta?.project || state.closed) return;
+  clearTimeout(state.sessionTimer);
+  state.sessionTimer = setTimeout(persistSession, 650);
+}
+function persistSession() {
+  clearTimeout(state.sessionTimer); state.sessionTimer = null;
+  if (!state.persistenceReady || state.initialFilePending || !state.meta?.project || state.closed) return;
+  const positions = { ...state.session?.positions };
+  for (const doc of state.documents.values()) {
+    const selection = doc.state.selection.main;
+    positions[doc.path] = { anchor: selection.anchor, head: selection.head, scrollTop: doc.path === state.activePath && state.editor ? state.editor.scrollDOM.scrollTop : positions[doc.path]?.scrollTop || 0 };
+  }
+  state.session = { version: 1, updatedAt: Date.now(), activePath: state.activePath, positions, pdf: viewer.getViewState(), sidebar: state.sidebar };
+  sessionStore.write(`session:${state.meta.project.root}`, state.session, 0);
+}
+async function loadProjectSession(root, generation) {
+  const [session, drafts] = await Promise.all([sessionStore.read(`session:${root}`), sessionStore.read(`drafts:${root}`)]);
+  if (generation !== state.projectGeneration) return;
+  state.session = session && typeof session === 'object' ? session : null;
+  state.drafts = { version: 1, entries: Array.isArray(drafts?.entries) ? drafts.entries.filter(entry => typeof entry?.id === 'string' && typeof entry.path === 'string' && typeof entry.content === 'string' && typeof entry.baseRevision === 'string') : [] };
+  state.persistenceReady = true;
+  viewer.restorePosition(state.session?.pdf);
+  setSidebar(state.session?.sidebar === 'outline' ? 'outline' : 'files');
+  renderRecovery();
+  $('draft-status').textContent = availableDrafts().length ? '前回の草稿があります' : '';
+}
+async function openInitialFile() {
+  const project = state.meta?.project;
+  if (!project || state.operation) return;
+  if (state.activePath) { state.initialFilePending = false; return; }
+  const file = project.files?.find(item => item.path === state.session?.activePath) || project.files?.find(item => item.path === project.main) || project.files?.find(item => /\.tex$/i.test(item.path)) || project.files?.[0];
+  try { if (file) await openFile(file.path); }
+  finally { state.initialFilePending = false; scheduleSession(); }
+}
+
+function updateIndex(path, content, rebuild = true) {
+  const tex = /\.tex$/i.test(path) ? extractTexMetadata(content, path) : { outline: [], labels: [] };
+  state.texIndex.set(path, { path, ...tex, citations: /\.bib$/i.test(path) ? extractCitations(content, path) : [] });
+  const doc = state.documents.get(path);
+  if (doc && doc.state.doc.toString() === content) doc.indexedDoc = doc.state.doc;
+  if (rebuild) rebuildIndex();
+}
+function rebuildIndex() {
+  const values = [...state.texIndex.values()];
+  state.completionItems = { citations: values.flatMap(item => item.citations), labels: values.flatMap(item => item.labels) };
+  renderOutline();
+}
+function scheduleIndex(doc) {
+  clearTimeout(state.outlineTimer);
+  state.outlineTimer = setTimeout(() => {
+    const current = state.documents.get(doc.path);
+    if (state.editor?.composing) { scheduleIndex(doc); return; }
+    if (current) updateIndex(current.path, current.state.doc.toString());
+  }, 400);
+}
+async function indexProject(force = false) {
+  const project = state.meta?.project;
+  if (!project) return;
+  const generation = state.projectGeneration;
+  if (force) state.texIndex.clear();
+  const files = project.files.filter(file => /\.(tex|bib)$/i.test(file.path) && !state.texIndex.has(file.path));
+  state.indexing = true; renderOutline();
+  let next = 0;
+  await Promise.all([0, 1, 2].map(async () => {
+    while (next < files.length && generation === state.projectGeneration) {
+      const file = files[next++];
+      try {
+        const open = state.documents.get(file.path);
+        const content = open ? open.state.doc.toString() : (await api(`/api/file?path=${encodeURIComponent(file.path)}`)).content;
+        if (generation !== state.projectGeneration) return;
+        updateIndex(file.path, state.documents.get(file.path)?.state.doc.toString() ?? content, false);
+      } catch (error) {
+        if (generation === state.projectGeneration) state.indexError = error.message || String(error);
+      }
+    }
+  }));
+  if (generation === state.projectGeneration) { state.indexing = false; rebuildIndex(); }
+}
+function setSidebar(mode) {
+  state.sidebar = mode;
+  const outline = mode === 'outline';
+  $('file-tree').hidden = outline; $('outline-tree').hidden = !outline;
+  $('files-tab').classList.toggle('selected', !outline); $('outline-tab').classList.toggle('selected', outline);
+  $('files-tab').setAttribute('aria-selected', String(!outline)); $('outline-tab').setAttribute('aria-selected', String(outline));
+  $('file-filter').placeholder = outline ? '見出しを検索' : 'ファイルを検索';
+  $('file-filter').setAttribute('aria-label', outline ? '見出しを検索' : 'ファイルを検索');
+  renderTree(); renderOutline(); scheduleSession();
+}
+function renderOutline() {
+  const container = $('outline-tree'); container.replaceChildren();
+  const query = $('file-filter').value.trim().toLowerCase();
+  const entries = [...state.texIndex.values()].filter(item => item.outline.length).sort((a, b) => a.path === state.meta?.project?.main ? -1 : b.path === state.meta?.project?.main ? 1 : a.path.localeCompare(b.path));
+  let count = 0;
+  for (const file of entries) {
+    const items = file.outline.filter(item => !query || `${item.title} ${file.path}`.toLowerCase().includes(query));
+    if (!items.length) continue;
+    const baseLevel = Math.min(...file.outline.map(item => item.level));
+    const heading = document.createElement('p'); heading.className = 'outline-file'; heading.textContent = file.path; container.append(heading);
+    for (const item of items) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'outline-link';
+      button.dataset.path = file.path; button.dataset.line = String(item.line); button.style.setProperty('--outline-depth', String(Math.max(0, Math.min(4, item.level - baseLevel))));
+      const title = document.createElement('span'); title.textContent = item.title || '(無題の見出し)';
+      const line = document.createElement('span'); line.className = 'outline-line'; line.textContent = String(item.line);
+      button.append(title, line); button.addEventListener('click', () => runTask(() => goToSource(file.path, item.line)));
+      container.append(button); count++;
+    }
+  }
+  if (!count) { const text = document.createElement('p'); text.className = 'tree-empty'; text.textContent = state.indexing ? '見出しを読み込んでいます…' : state.indexError ? `原稿を読み込めませんでした．${state.indexError}` : query ? '一致する見出しがありません．' : 'section や chapter の見出しがここに表示されます．'; container.append(text); }
+  updateOutlinePosition();
+}
+function updateOutlinePosition() {
+  const line = state.editor ? state.editor.state.doc.lineAt(state.editor.state.selection.main.head).number : 0;
+  let candidate = null;
+  for (const button of $('outline-tree').querySelectorAll('.outline-link')) {
+    button.classList.remove('active');
+    if (button.dataset.path === state.activePath && Number(button.dataset.line) <= line) candidate = button;
+  }
+  candidate?.classList.add('active');
+}
+function renderLogLocations() {
+  const container = $('log-locations'); container.replaceChildren();
+  const locations = extractLogLocations(state.fullLog, state.meta?.project?.files || []);
+  container.hidden = !locations.length;
+  for (const location of locations.slice(0, 40)) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'log-location'; button.title = location.message || '';
+    button.dataset.path = location.path; button.dataset.line = String(location.line);
+    const label = document.createElement('span'); label.textContent = `${location.path}:${location.line}`;
+    const message = document.createElement('span'); message.className = 'log-location-message'; message.textContent = location.message;
+    button.append(label, message); button.addEventListener('click', () => runTask(() => goToSource(location.path, location.line)));
+    container.append(button);
+  }
+}
+
+async function goToSource(path, lineNumber, column = 1) {
+  if (state.operation || state.closed) return false;
+  const generation = state.projectGeneration;
+  await openFile(path);
+  if (generation !== state.projectGeneration || state.activePath !== path || !state.editor) return false;
+  switchView(false);
+  const number = Math.min(state.editor.state.doc.lines, Math.max(1, Number(lineNumber) || 1));
+  const line = state.editor.state.doc.line(number);
+  const position = Math.min(line.to, line.from + Math.max(0, Number(column) - 1 || 0));
+  state.editor.dispatch({ selection: { anchor: position }, effects: [EditorView.scrollIntoView(position, { y: 'center' }), lineFlash.of(number)] });
+  state.editor.focus();
+  clearTimeout(lineFlashTimer);
+  const target = activeDocument();
+  lineFlashTimer = setTimeout(() => {
+    if (!target || !state.documents.has(target.path)) return;
+    const transaction = target.state.update({ effects: lineFlash.of(null) });
+    if (state.activePath === target.path && state.editor) state.editor.update([transaction]); else target.state = transaction.state;
+  }, 2600);
+  return true;
+}
+function noteSourceChanged(result) {
+  if (result.sourceChanged || dirtyDocuments().length) toast('この PDF を作成した後に原稿が変更されています．行の位置がずれる場合があります．');
+}
+async function syncForward(position = null) {
+  if (state.syncing || state.operation || !state.editor || !state.meta?.project) return;
+  if (!viewer.ready || !viewer.buildId) throw new Error('PDF をコンパイルしてから，原稿と PDF の位置を対応させてください．');
+  const generation = state.projectGeneration;
+  const path = state.activePath;
+  const view = state.editor;
+  const offset = position == null ? view.state.selection.main.head : Math.max(0, Math.min(view.state.doc.length, position));
+  const line = view.state.doc.lineAt(offset);
+  const buildId = viewer.buildId;
+  state.syncing = true; renderControls();
+  try {
+    const result = await api('/api/synctex/forward', { method: 'POST', body: { buildId, path, line: line.number, column: 0 } });
+    if (generation !== state.projectGeneration || buildId !== viewer.buildId) return;
+    if (!result.locations?.length) throw new Error(`${path} の ${line.number} 行に対応する PDF の位置が見つかりませんでした．文章や数式の行で試してください．`);
+    const target = result.locations.find(location => location.page === viewer.pageNumber) || result.locations[0];
+    switchView(true);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    viewer.refreshLayout();
+    await viewer.showLocation(target, buildId);
+    clearError(); noteSourceChanged(result);
+  } finally { state.syncing = false; renderControls(); }
+}
+async function syncInverse(position) {
+  if (state.syncing || state.operation || !state.meta?.project) return;
+  const generation = state.projectGeneration;
+  state.syncing = true; renderControls();
+  try {
+    const result = await api('/api/synctex/inverse', { method: 'POST', body: position });
+    if (generation !== state.projectGeneration || position.buildId !== viewer.buildId) return;
+    await goToSource(result.path, result.line, result.column);
+    clearError(); noteSourceChanged(result);
+  } finally { state.syncing = false; renderControls(); }
+}
+
 const viewer = new PDFViewer({
   token,
   onError: error => showError(error, { label: 'PDF を再表示', run: async () => { clearError(); await viewer.retry(); } }),
-  onReady: () => updatePreviewNote(),
+  onReady: () => { updatePreviewNote(); renderControls(); },
+  onPositionChange: () => scheduleSession(),
+  onInverse: position => runTask(() => syncInverse(position)),
 });
+
+let cachedTheme = null;
+try { cachedTheme = localStorage.getItem('local-tex-editor-theme'); } catch { /* Use the system preference on the first visit. */ }
+applyTheme(['light', 'dark'].includes(cachedTheme) ? cachedTheme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+onClick('theme-toggle', () => applyTheme(state.theme === 'dark' ? 'light' : 'dark', true));
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => { if (!state.preferences.theme) applyTheme(event.matches ? 'dark' : 'light'); });
 
 onClick('show-project', showProjectDialog); onClick('welcome-open', showProjectDialog);
 onClick('settings-button', showSettings); onClick('main-document', showSettings);
 onClick('pick-project', pickProject); onClick('shutdown-button', shutdown);
 onClick('save-button', saveCurrent); onClick('compile-button', startBuild); onClick('stop-button', stopBuild);
 onClick('refresh-files', refreshFiles); onClick('download-pdf', downloadPDF); onClick('copy-log', copyLog);
+onClick('synctex-forward', () => syncForward());
+onClick('files-tab', () => { $('file-filter').value = ''; setSidebar('files'); });
+onClick('outline-tab', () => { $('file-filter').value = ''; setSidebar('outline'); });
+onClick('review-drafts', showRecovery); onClick('dismiss-recovery', () => { $('recovery-banner').hidden = true; });
+onClick('restore-draft', restoreDraft); onClick('delete-draft', deleteSelectedDraft);
+$('recovery-file').addEventListener('change', () => runTask(inspectDraft));
 onClick('find-button', () => { if (state.editor) { openSearchPanel(state.editor); state.editor.focus(); } });
 onClick('dismiss-error', clearError); onClick('review-conflict', () => resolveConflict(activeDocument()));
 onClick('log-toggle', () => setLogVisible($('log-panel').hidden)); onClick('close-log', () => setLogVisible(false));
@@ -786,11 +1229,14 @@ onClick('new-file', () => { if (!state.meta?.project) return; $('new-file-path')
 $('project-form').addEventListener('submit', event => { runTask(() => openProject(event)); event.preventDefault(); });
 $('settings-form').addEventListener('submit', event => { runTask(() => saveSettings(event)); event.preventDefault(); });
 $('new-file-form').addEventListener('submit', event => { runTask(() => createFile(event)); event.preventDefault(); });
-$('file-filter').addEventListener('input', renderTree);
+$('file-filter').addEventListener('input', () => { renderTree(); renderOutline(); });
 for (const button of document.querySelectorAll('[data-close-dialog]')) button.addEventListener('click', () => {
   const dialog = $(button.dataset.closeDialog); if (dialog.dataset.busy !== 'true') dialog.close();
 });
-for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('cancel', event => { if (dialog.dataset.busy === 'true') event.preventDefault(); });
+for (const dialog of document.querySelectorAll('dialog')) {
+  dialog.addEventListener('cancel', event => { if (dialog.dataset.busy === 'true') event.preventDefault(); });
+  dialog.addEventListener('close', scheduleAutoSave);
+}
 
 onClick('sidebar-toggle', () => {
   const collapsed = $('app-shell').classList.toggle('sidebar-collapsed');
@@ -801,6 +1247,7 @@ function switchView(preview) {
   $('app-shell').classList.toggle('preview-mode', preview);
   $('show-preview').classList.toggle('selected', preview); $('show-editor').classList.toggle('selected', !preview);
   $('show-preview').setAttribute('aria-pressed', String(preview)); $('show-editor').setAttribute('aria-pressed', String(!preview));
+  if (preview) requestAnimationFrame(() => viewer.refreshLayout());
 }
 onClick('show-editor', () => switchView(false)); onClick('show-preview', () => switchView(true));
 
@@ -832,15 +1279,25 @@ document.addEventListener('keydown', event => {
   if (event.key.toLowerCase() === 's') { event.preventDefault(); runTask(event.shiftKey ? saveEveryDocument : saveCurrent); }
   else if (event.key === 'Enter') { event.preventDefault(); runTask(startBuild); }
 });
-window.addEventListener('beforeunload', event => { if (!state.closed && (dirtyDocuments().length || [...state.documents.values()].some(doc => doc.saving))) { event.preventDefault(); event.returnValue = ''; } });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') runTask(heartbeat); });
+window.addEventListener('beforeunload', event => {
+  if (state.closed) return;
+  syncDrafts(); persistSession(); sessionStore.flush().catch(() => {});
+  if (dirtyDocuments().length || [...state.documents.values()].some(doc => doc.saving)) { event.preventDefault(); event.returnValue = ''; }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { runTask(heartbeat); scheduleAutoSave(); }
+  else { syncDrafts(); persistSession(); sessionStore.flush().catch(() => {}); }
+});
 setInterval(() => { if (isRunning()) updateElapsed(); }, 1000);
 
 async function initialise() {
+  setOperation('initialising');
   try {
     const meta = await api('/api/state');
+    await loadPreferences();
     await applyMeta(meta, true);
     state.heartbeat = setInterval(() => runTask(heartbeat), 30000);
   } catch (error) { showError(error); }
+  finally { setOperation(''); runTask(openInitialFile); }
 }
 initialise();

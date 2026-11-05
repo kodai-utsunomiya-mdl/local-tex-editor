@@ -317,6 +317,10 @@ func TestPDFCopiesAreBounded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		run := &buildRun{started: time.Now(), result: Build{ID: id, Status: "running"}}
+		a.build = run
+		code := 0
+		a.finishBuild(run, &code, nil, last, id)
 	}
 	if _, err := os.Stat(last); err != nil {
 		t.Fatalf("the newest PDF was deleted: %v", err)
@@ -325,8 +329,14 @@ func TestPDFCopiesAreBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("kept %d PDF copies", len(entries))
+	copies := 0
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".pdf") {
+			copies++
+		}
+	}
+	if copies != 2 {
+		t.Fatalf("kept %d PDF copies", copies)
 	}
 }
 

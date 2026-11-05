@@ -33,19 +33,23 @@ type Options struct {
 }
 
 type App struct {
-	mu          sync.Mutex
-	options     Options
-	config      configuration
-	project     *Project
-	build       *buildRun
-	address     string
-	closed      bool
-	picking     bool
-	workers     sync.WaitGroup
-	lastPDF     string
-	lastPDFID   string
-	pdfVersions map[string]string
-	pdfOrder    []string
+	uiMu sync.Mutex
+	mu              sync.Mutex
+	cacheMu         sync.RWMutex
+	options         Options
+	config          configuration
+	project         *Project
+	build           *buildRun
+	address         string
+	closed          bool
+	picking         bool
+	workers         sync.WaitGroup
+	lastPDF         string
+	lastPDFID       string
+	pdfVersions     map[string]string
+	pdfOrder        []string
+	synctexVersions map[string]*synctexVersion
+	synctexSlots    chan struct{}
 }
 
 type State struct {
@@ -89,7 +93,7 @@ func New(options Options) (*App, error) {
 	if err := os.MkdirAll(options.ConfigDir, 0700); err != nil {
 		return nil, fmt.Errorf("設定フォルダーを作成できません: %w", err)
 	}
-	a := &App{options: options, pdfVersions: make(map[string]string)}
+	a := &App{options: options, pdfVersions: make(map[string]string), synctexVersions: make(map[string]*synctexVersion), synctexSlots: make(chan struct{}, 2)}
 	if err := a.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -137,10 +141,13 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/api/project/open", a.openHandler)
 	mux.HandleFunc("/api/project/pick", a.pickHandler)
 	mux.HandleFunc("/api/settings", a.settingsHandler)
+	mux.HandleFunc("/api/storage", a.storageHandler)
 	mux.HandleFunc("/api/file", a.fileHandler)
 	mux.HandleFunc("/api/build", a.buildHandler)
 	mux.HandleFunc("/api/build/stop", a.stopHandler)
 	mux.HandleFunc("/api/pdf", a.pdfHandler)
+	mux.HandleFunc("/api/synctex/forward", a.forwardSyncHandler)
+	mux.HandleFunc("/api/synctex/inverse", a.inverseSyncHandler)
 	mux.HandleFunc("/api/shutdown", a.shutdownHandler)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, fail(http.StatusNotFound, "API が見つかりません．"))

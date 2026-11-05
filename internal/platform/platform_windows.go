@@ -190,3 +190,24 @@ func decodeSystemCodePage(data []byte) string {
 	}
 	return string(utf16.Decode(wide[:int(result)]))
 }
+
+// TeX Live's SyncTeX writer uses the Windows ANSI code page for Input names.
+// Recreating that spelling lets the application match the recorded name to
+// a Unicode name from the project or TeX's recorder file.
+func EncodeFileName(name string) []byte {
+	wide := utf16.Encode([]rune(name))
+	if len(wide) == 0 {
+		return nil
+	}
+	convert := kernel32.NewProc("WideCharToMultiByte")
+	count, _, _ := convert.Call(0, 0, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)), 0, 0, 0, 0)
+	if count == 0 {
+		return []byte(name)
+	}
+	data := make([]byte, int(count))
+	result, _, _ := convert.Call(0, 0, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)), uintptr(unsafe.Pointer(&data[0])), count, 0, 0)
+	if result == 0 {
+		return []byte(name)
+	}
+	return data[:int(result)]
+}

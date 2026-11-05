@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -37,8 +36,10 @@ type Build struct {
 	FinishedAt    string `json:"finishedAt"`
 	PDFReady      bool   `json:"pdfReady"`
 	PDFBuildID    string `json:"pdfBuildId"`
+	SyncTeXReady  bool   `json:"synctexReady"`
 	ElapsedMS     int64  `json:"elapsedMs"`
 	SourceChanged bool   `json:"sourceChanged"`
+	Restored      bool   `json:"restored"`
 }
 
 type buildRun struct {
@@ -49,6 +50,8 @@ type buildRun struct {
 	cancelRequested bool
 	log             []byte
 	truncated       bool
+	synctex         *synctexVersion
+	sources         map[string]string
 }
 
 type commandOutput struct {
@@ -116,6 +119,7 @@ func (a *App) buildSnapshotLocked() *Build {
 	}
 	result.PDFReady = a.lastPDF != ""
 	result.PDFBuildID = a.lastPDFID
+	result.SyncTeXReady = a.synctexVersions[a.lastPDFID] != nil
 	end := run.finished
 	if end.IsZero() {
 		end = time.Now()
@@ -186,14 +190,27 @@ func (a *App) finishBuild(run *buildRun, code *int, err error, pdf, pdfID string
 		run.result.Error = ""
 		a.lastPDF, a.lastPDFID = pdf, pdfID
 		a.pdfVersions[pdfID] = pdf
+		if run.synctex != nil {
+			run.synctex.ChangedDuringBuild = run.result.SourceChanged
+			a.synctexVersions[pdfID] = run.synctex
+		}
 		a.pdfOrder = append(a.pdfOrder, pdfID)
 		for len(a.pdfOrder) > 2 {
 			delete(a.pdfVersions, a.pdfOrder[0])
+			delete(a.synctexVersions, a.pdfOrder[0])
 			a.pdfOrder = a.pdfOrder[1:]
+		}
+		if a.project != nil {
+			if err := a.saveCachedBuild(*a.project, run, pdf); err != nil {
+				a.appendLogLocked(run, []byte("\n[前回の PDF] 次の起動時に読み込む情報を保存できません: "+err.Error()+"\n"))
+			}
 		}
 	}
 	if run.result.Error != "" {
 		a.appendLogLocked(run, []byte("\n[Local TeX Editor] "+run.result.Error+"\n"))
+	}
+	if pdf != "" {
+		a.trimPDFCacheLocked(filepath.Dir(pdf))
 	}
 	if code != nil {
 		a.appendLogLocked(run, []byte(fmt.Sprintf("\n[終了コード: %d]\n", *code)))
@@ -218,6 +235,8 @@ func (a *App) compile(run *buildRun, project Project, texBin string) {
 		return
 	}
 	defer release()
+	sources := snapshotSourceRevisions(project.Root)
+	run.sources = sources
 	args := latexmkArguments(project)
 	cmd := exec.Command(tool, args...)
 	cmd.Dir = project.Root
@@ -268,6 +287,12 @@ func (a *App) compile(run *buildRun, project Project, texBin string) {
 		return
 	}
 	_, _ = writer.Write([]byte("\n[PDF] " + pdfSource + "\n"))
+	run.synctex, err = a.cacheSyncTeX(project.Root, pdfSource, pdf, run.result.ID, bin, sources)
+	if err != nil {
+		_, _ = writer.Write([]byte("[SyncTeX] 原稿と PDF の位置を照合できません: " + err.Error() + "\n"))
+	} else {
+		_, _ = writer.Write([]byte("[SyncTeX] この PDF に対応するデータを保存しました．\n"))
+	}
 	a.finishBuild(run, &code, nil, pdf, run.result.ID)
 }
 
@@ -518,8 +543,9 @@ func validatePDF(root, directory, path string) (string, error) {
 }
 
 func (a *App) copySuccessfulPDF(root, source, id string) (string, error) {
-	key := sha256.Sum256([]byte(root))
-	directory := filepath.Join(a.options.ConfigDir, "cache", hex.EncodeToString(key[:16]))
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	directory := a.projectCacheDirectory(root)
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return "", err
 	}
@@ -555,17 +581,6 @@ func (a *App) copySuccessfulPDF(root, source, id string) (string, error) {
 	destination := filepath.Join(directory, "pdf-"+id+".pdf")
 	if err := platform.ReplaceFile(temp, destination); err != nil {
 		return "", err
-	}
-	entries, _ := os.ReadDir(directory)
-	var copies []os.DirEntry
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "pdf-") && strings.HasSuffix(entry.Name(), ".pdf") {
-			copies = append(copies, entry)
-		}
-	}
-	sort.Slice(copies, func(i, j int) bool { return copies[i].Name() > copies[j].Name() })
-	for _, entry := range copies[minimum(2, len(copies)):] {
-		_ = os.Remove(filepath.Join(directory, entry.Name()))
 	}
 	return destination, nil
 }
