@@ -68,7 +68,7 @@ export class PDFViewer {
     this.elements.loading.hidden = false;
     const oldLoading = this.loadingTask;
     this.loadingTask = null;
-    if (oldLoading && !this.document) await oldLoading.destroy().catch(() => {});
+    if (oldLoading && oldLoading !== this.document?.loadingTask) await oldLoading.destroy().catch(() => {});
     if (generation !== this.generation) return;
     const task = pdfjs.getDocument({
       url: `/api/pdf?build=${encodeURIComponent(buildId)}`,
@@ -83,9 +83,9 @@ export class PDFViewer {
     this.loadingTask = task;
     try {
       const nextDocument = await task.promise;
-      if (generation !== this.generation) { await nextDocument.destroy(); return; }
+      if (generation !== this.generation) { await task.destroy(); return; }
       await this.cancelRender();
-      if (generation !== this.generation) { await nextDocument.destroy(); return; }
+      if (generation !== this.generation) { await task.destroy(); return; }
       const previousDocument = this.document;
       this.document = nextDocument;
       this.buildId = buildId;
@@ -94,7 +94,7 @@ export class PDFViewer {
       this.updateControls();
       this.elements.empty.hidden = true;
       this.elements.stage.hidden = false;
-      await previousDocument?.destroy();
+      await previousDocument?.loadingTask.destroy();
       if (generation !== this.generation) return;
       await this.render(false);
       this.elements.scroll.scrollTop = scrollTop;
@@ -234,7 +234,7 @@ export class PDFViewer {
     this.lastRequest = null;
     this.pageNumber = 1;
     await this.cancelRender();
-    await document?.destroy().catch(() => {});
+    await document?.loadingTask.destroy().catch(() => {});
     if (loadingTask && loadingTask !== document?.loadingTask) await loadingTask.destroy().catch(() => {});
     this.lastPage = null;
     this.elements.stage.hidden = true;
