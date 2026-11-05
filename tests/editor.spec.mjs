@@ -405,7 +405,7 @@ test('改行を貼り付けて検索し，TeX のコマンドをそのまま置�
   await expect(page.getByTestId('source-search-next')).toBeDisabled();
   await page.getByRole('checkbox', { name: '正規表現', exact: true }).uncheck();
   await search.fill(replacement);
-  await expect(page.getByTestId('source-search-count')).toHaveText('2 件');
+  await expect(page.getByTestId('source-search-count')).toHaveText('1 / 2');
   await page.screenshot({ path: testInfo.outputPath('multiline-search.png') });
   await search.press('Escape');
   await expect(search).not.toBeVisible();
