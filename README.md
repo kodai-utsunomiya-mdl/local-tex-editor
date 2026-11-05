@@ -31,7 +31,7 @@ Overleaf にある最新の原稿は，プロジェクトのソースを ZIP と
 
 ## コンパイルの設定
 
-既存の `latexmkrc` がある原稿では，エンジンの設定を「プロジェクトの設定」にする．`latexmkrc` / `.latexmkrc` に書かれた `uplatex`，`upbibtex`，`dvipdfmx` などの指定を使う．
+既存の `latexmkrc` がある原稿では，設定画面のコンパイラーを「latexmkrc の設定を使う」にする．`latexmkrc` / `.latexmkrc` に書かれた `uplatex`，`upbibtex`，`dvipdfmx` などの指定を使う．
 
 `latexmkrc` を置かないプロジェクトでは，pdfLaTeX，upLaTeX，XeLaTeX，LuaLaTeX を選択できる．アプリは `latexmk` を実行し，参考文献や相互参照に必要な再実行も `latexmk` が担当する．
 

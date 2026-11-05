@@ -301,6 +301,13 @@ func (a *App) stopBuild(expectedProject ...string) error {
 func latexmkArguments(project Project) []string {
 	args := []string{"-interaction=nonstopmode", "-file-line-error", "-halt-on-error", "-synctex=1", "-recorder",
 		"-outdir=" + buildRelative, "-auxdir=" + buildRelative}
+	if runtime.GOOS == "windows" {
+		// Keep BibTeX in the source directory. upBibTeX resolves absolute
+		// BIBINPUTS paths through Windows' legacy code page, which can lose
+		// characters in the project's parent directories. The auxiliary
+		// files are still addressed relative to the source directory.
+		args = append(args, "-bibtexfudge-")
+	}
 	switch project.Mode {
 	case "pdflatex":
 		args = append(args, "-pdf")
