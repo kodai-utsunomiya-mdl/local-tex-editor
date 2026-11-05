@@ -273,6 +273,7 @@ function makeDocument(file) {
 
 function selectDocument(doc) {
   rememberEditorPosition(); assetPreview.hide(); rememberTab(doc.path);
+  doc.state = doc.state.update({ effects: readOnly.reconfigure([EditorState.readOnly.of(!!state.operation), EditorView.editable.of(!state.operation)]) }).state;
   const position = !doc.visited ? state.session?.positions?.[doc.path] : { scrollTop: doc.scrollTop || 0 };
   if (position && !doc.visited) doc.state = doc.state.update({ selection: { anchor: Math.min(doc.state.doc.length, Math.max(0, Number(position.anchor) || 0)), head: Math.min(doc.state.doc.length, Math.max(0, Number(position.head) || 0)) } }).state;
   doc.visited = true;

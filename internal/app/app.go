@@ -36,6 +36,8 @@ type App struct {
 	uiMu            sync.Mutex
 	mu              sync.Mutex
 	cacheMu         sync.RWMutex
+	shortcutMu      sync.Mutex
+	shortcutCreator func(string) (platform.ShortcutResult, error)
 	options         Options
 	config          configuration
 	project         *Project
@@ -60,6 +62,7 @@ type State struct {
 	Synctex                string   `json:"synctex"`
 	SynctexError           string   `json:"synctexError,omitempty"`
 	SynctexInstallCommands []string `json:"synctexInstallCommands"`
+	ShortcutsSupported     bool     `json:"shortcutsSupported"`
 	Project                *Project `json:"project"`
 	RecentProjects         []string `json:"recentProjects"`
 	Build                  *Build   `json:"build"`
@@ -144,6 +147,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/api/project/open", a.openHandler)
 	mux.HandleFunc("/api/project/pick", a.pickHandler)
 	mux.HandleFunc("/api/settings", a.settingsHandler)
+	mux.HandleFunc("/api/shortcuts", a.shortcutsHandler)
 	mux.HandleFunc("/api/storage", a.storageHandler)
 	mux.HandleFunc("/api/file", a.fileHandler)
 	mux.HandleFunc("/api/asset", a.assetHandler)
@@ -249,7 +253,8 @@ func (a *App) stateLocked(refresh bool) State {
 	}
 	result := State{
 		Version: a.options.Version, Platform: runtime.GOOS,
-		TexBin: a.config.TexBin, RecentProjects: append([]string{}, a.config.RecentProjects...),
+		ShortcutsSupported: runtime.GOOS == "windows",
+		TexBin:             a.config.TexBin, RecentProjects: append([]string{}, a.config.RecentProjects...),
 		Build: a.buildSnapshotLocked(),
 	}
 	if a.project != nil {

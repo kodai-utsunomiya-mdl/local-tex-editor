@@ -94,6 +94,10 @@ async function replaceEditor(page, content) {
   await page.keyboard.insertText(content);
 }
 
+function expectedMainContent(session, content) {
+  return content.replaceAll('\r\n', '\n').replaceAll('\n', session.mainLineEnding);
+}
+
 async function setAutoSave(page, enabled) {
   await page.getByTestId('settings-button').click();
   await page.getByTestId('autosave-setting').setChecked(enabled);
@@ -163,6 +167,7 @@ const test = base.extend({
     const temp = await mkdtemp(path.join(os.tmpdir(), 'ltex-'));
     const project = path.join(temp, '日本語の原稿 with spaces');
     await cp(fixture, project, { recursive: true });
+    const mainLineEnding = (await readFile(path.join(project, 'main.tex'), 'utf8')).includes('\r\n') ? '\r\n' : '\n';
     const readyFile = path.join(temp, 'ready.json');
     const args = ['--no-browser', '--ready-file', readyFile, '--config-dir', path.join(temp, 'config')];
     if (process.env.LOCAL_TEX_EDITOR_TEST_TEX_BIN) {
@@ -219,7 +224,7 @@ const test = base.extend({
       }
     }
     try {
-      session = { ...await start(), project, temp };
+      session = { ...await start(), project, temp, mainLineEnding };
       session.restart = async () => {
         await stop();
         Object.assign(session, await start());
@@ -271,7 +276,55 @@ test('終了を取り消して編集を続け，保存してからタブを閉�
   await editorPage.locator('#decision-primary').click();
   await closed;
   expect(editorPage.isClosed()).toBe(true);
-  expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(content);
+  expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(expectedMainContent(session, content));
+});
+
+test('終了確認中に別のファイルが読み込まれても，取消後に元の原稿を編集できる', async ({ page, session }) => {
+  await writeFile(path.join(session.project, 'notes.txt'), '読み込みを待つファイル\n', 'utf8');
+  await openProject(session);
+  await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
+  await expect(page.getByTestId('editor')).toHaveAttribute('data-path', 'main.tex');
+  await setAutoSave(page, false);
+  const content = '% 終了を取り消した後も編集する原稿\n';
+  await replaceEditor(page, content);
+
+  let release;
+  const responseGate = new Promise(resolve => { release = resolve; });
+  let requested;
+  const requestStarted = new Promise(resolve => { requested = resolve; });
+  const fileURL = url => url.pathname === '/api/file' && url.searchParams.get('path') === 'notes.txt';
+  await page.route(fileURL, async route => {
+    const response = await route.fetch();
+    requested();
+    await responseGate;
+    await route.fulfill({ response });
+  });
+  try {
+    await page.getByTestId('file-notes.txt').click();
+    await requestStarted;
+    await page.locator('#shutdown-button').click();
+    await expect(page.locator('#decision-dialog')).toBeVisible();
+    release();
+    await expect(page.getByTestId('editor')).toHaveAttribute('data-path', 'notes.txt');
+    await expect(page.getByTestId('editor').locator('.cm-content')).toHaveAttribute('contenteditable', 'false');
+    await page.locator('#decision-cancel').click();
+    await expect(page.locator('#decision-dialog')).not.toBeVisible();
+    await expect(page.getByTestId('editor').locator('.cm-content')).toHaveAttribute('contenteditable', 'true');
+
+    await page.locator('#editor-tabs .tab-select[data-path="main.tex"]').click();
+    const editor = page.getByTestId('editor').locator('.cm-content');
+    await expect(editor).toHaveAttribute('contenteditable', 'true');
+    await expect(editor).toContainText('終了を取り消した後も編集する原稿');
+    await editor.click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.insertText('% 続けて入力できた\n');
+    await expect(editor).toContainText('続けて入力できた');
+    await page.keyboard.press('Control+S');
+    await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(expectedMainContent(session, content + '% 続けて入力できた\n'));
+  } finally {
+    release();
+    await page.unroute(fileURL);
+  }
 });
 
 test('自動で閉じられないタブに終了を表示し，草稿を次回に戻す', async ({ page, session }, testInfo) => {
@@ -336,7 +389,7 @@ test('改行を貼り付けて検索し，TeX のコマンドをそのまま置�
   await page.getByTestId('source-search-replace-all').click();
   await expect(page.getByTestId('source-search-count')).toHaveText('0 件');
   await page.getByTestId('save-button').click();
-  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(`% before\n${replacement}\n% middle\n${replacement}\n% after\n`);
+  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(expectedMainContent(session, `% before\n${replacement}\n% middle\n${replacement}\n% after\n`));
 
   let builds = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === '/api/build' && request.method() === 'POST') builds++; });
@@ -400,7 +453,7 @@ test('フォルダーから画像と PDF を開き，編集中の原稿へ戻る
   await expect(page.getByTestId('editor').locator('.cm-content')).toContainText('図を確認する前の草稿');
   await expect(page.getByTestId('save-button')).toBeEnabled();
   await page.getByTestId('save-button').click();
-  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(source);
+  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(expectedMainContent(session, source));
 
   await page.setViewportSize({ width: 1440, height: 900 });
   const dimensions = await page.evaluate(() => ({
@@ -758,7 +811,7 @@ test('150 ページの PDF の末尾へ移動し，必要なページを描画�
   await expect(canvas).toHaveAttribute('data-page', '150');
   await expect(canvas).toHaveAttribute('data-ready', 'true');
   await expect(canvas).toHaveAttribute('data-build-id', finished.pdfBuildId);
-  const rendering = await page.locator('.pdfViewer').evaluate(viewer => {
+  const rendering = await page.locator('#pdf-stage').evaluate(viewer => {
     const canvases = [...viewer.querySelectorAll('canvas')];
     return {
       pages: viewer.querySelectorAll('.page').length,
