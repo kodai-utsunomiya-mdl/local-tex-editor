@@ -60,6 +60,8 @@
       </div>
     </main>
 
+    <main id="closed-screen" data-testid="closed-screen" class="closed-screen" aria-labelledby="closed-title" hidden><h1 id="closed-title">アプリを終了しました</h1><p id="closed-message" role="status">タブを閉じています…</p></main>
+
     <main id="workbench" class="workbench" hidden>
       <aside class="file-pane" id="file-pane" aria-label="プロジェクトのファイル">
         <div class="sidebar-heading">
@@ -111,16 +113,16 @@
           <button type="button" id="pdf-next" data-testid="pdf-next" class="icon-button" aria-label="次のページ" disabled>›</button>
           <span id="pdf-state" class="pdf-state"></span>
           <span class="toolbar-spacer"></span>
-          <button type="button" id="pdf-zoom-out" data-testid="pdf-zoom-out" class="icon-button zoom-button" aria-label="PDF を縮小" title="縮小" disabled>−</button>
+          <button type="button" id="pdf-zoom-out" data-testid="pdf-zoom-out" class="icon-button zoom-button" aria-label="PDF を縮小" title="縮小 (Ctrl + ホイールやピンチでも操作できます)" disabled>−</button>
           <label class="zoom-control"><span class="sr-only">PDF の倍率</span><select id="pdf-zoom" data-testid="pdf-zoom" aria-label="PDF の倍率" disabled><option value="page-width">幅に合わせる</option><option value="page-fit">ページに合わせる</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option><option data-custom-zoom value="custom" hidden></option></select></label>
-          <button type="button" id="pdf-zoom-in" data-testid="pdf-zoom-in" class="icon-button zoom-button" aria-label="PDF を拡大" title="拡大" disabled>＋</button>
+          <button type="button" id="pdf-zoom-in" data-testid="pdf-zoom-in" class="icon-button zoom-button" aria-label="PDF を拡大" title="拡大 (Ctrl + ホイールやピンチでも操作できます)" disabled>＋</button>
           <span class="toolbar-divider" aria-hidden="true"></span>
           <button type="button" id="download-pdf" class="icon-button" title="コンパイルした PDF を保存" aria-label="PDF を保存" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></button>
         </div>
         <div id="pdf-note" class="pdf-note" hidden></div>
         <div class="pdf-frame">
           <div id="pdf-empty" class="pdf-empty"><div class="paper-placeholder" aria-hidden="true"><i></i><i></i><i></i><i></i></div><h3>PDF をここに表示します</h3><p>原稿を保存し，コンパイルしてください．</p></div>
-          <div id="pdf-scroll" data-testid="pdf-scroll" class="pdf-scroll" tabindex="0" aria-label="PDF を表示" title="ダブルクリックで対応する原稿へ移動 · Ctrl + ホイールで拡大・縮小"><div id="pdf-stage" class="pdfViewer" hidden></div></div>
+          <div id="pdf-scroll" data-testid="pdf-scroll" class="pdf-scroll" tabindex="0" aria-label="PDF を表示" aria-description="ダブルクリックで対応する原稿へ移動．Ctrl + ホイールやピンチで拡大・縮小．"><div id="pdf-stage" class="pdfViewer" hidden></div></div>
         </div>
         <div id="pdf-loading" class="pdf-loading" role="status" hidden><span class="spinner" aria-hidden="true"></span><span>PDF を表示しています…</span></div>
       </section>
@@ -158,6 +160,7 @@
       <div class="field-group"><span class="field-label">原稿と PDF の移動 (SyncTeX)</span><p id="synctex-tool-status" class="field-help"></p><div id="synctex-setup" class="synctex-setup" hidden><p class="field-help">PowerShell で次のコマンドを実行し，設定を開き直して SyncTeX のパスを確認してください．</p><pre id="synctex-install-commands" tabindex="0"></pre><button type="button" id="copy-synctex-setup" class="button button-small">コマンドをコピー</button></div></div>
       <div class="field-group" id="main-field"><label class="field-label" for="main-file">メイン文書</label><select id="main-file" data-testid="main-file"></select><p class="field-help">コンパイルする <code>.tex</code> ファイルを選びます．</p></div>
       <div class="field-group" id="mode-field"><label class="field-label" for="compile-mode">コンパイラー</label><select id="compile-mode" data-testid="compile-mode"><option value="project">latexmkrc の設定を使う</option><option value="pdflatex">pdfLaTeX</option><option value="uplatex">upLaTeX + dvipdfmx</option><option value="xelatex">XeLaTeX</option><option value="lualatex">LuaLaTeX</option></select><p id="mode-help" class="field-help">プロジェクト内の latexmkrc / .latexmkrc があれば，その設定を利用できます．</p></div>
+      <section id="shortcut-settings" class="shortcut-settings" aria-labelledby="shortcut-title" hidden><h3 id="shortcut-title">起動用のショートカット</h3><p class="field-help">PC のアプリフォルダーへ Local TeX Editor を配置し，選んだ場所にショートカットを作ります．次回からショートカットを開くと，アプリとブラウザが起動します．</p><div class="shortcut-actions"><button type="button" id="shortcut-start-menu" data-testid="shortcut-start-menu" class="button button-small">スタートメニューに追加</button><button type="button" id="shortcut-desktop" data-testid="shortcut-desktop" class="button button-small">デスクトップに作成</button></div><p id="shortcut-result" data-testid="shortcut-result" class="shortcut-result" role="status" hidden></p><dl id="shortcut-paths" class="shortcut-paths" hidden><div><dt>起動するアプリ</dt><dd id="shortcut-executable"></dd></div><div><dt>ショートカット</dt><dd id="shortcut-path"></dd></div></dl></section>
       <p id="settings-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions"><button type="button" class="button" data-close-dialog="settings-dialog">キャンセル</button><button type="submit" id="save-settings" class="button button-primary">設定を保存</button></div>
     </form>

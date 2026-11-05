@@ -250,6 +250,59 @@ test('起動時のエラーを無人実行でも受け取れる', async () => {
   expect(result.stderr).toContain('loopback');
 });
 
+test('終了を取り消して編集を続け，保存してからタブを閉じる', async ({ page, session }) => {
+  await openProject(session);
+  const opened = page.waitForEvent('popup');
+  await page.evaluate(url => { window.open(url, 'local-tex-editor'); }, `${session.url}#token=${encodeURIComponent(session.token)}`);
+  const editorPage = await opened;
+  await expect(editorPage.getByTestId('editor').locator('.cm-content')).toBeVisible();
+  await setAutoSave(editorPage, false);
+  const content = '% 終了する前に保存する原稿\n\\newcommand{\\example}{saved}\n';
+  await replaceEditor(editorPage, content);
+  await editorPage.locator('#shutdown-button').click();
+  await expect(editorPage.locator('#decision-dialog')).toBeVisible();
+  await editorPage.locator('#decision-cancel').click();
+  await expect(editorPage.locator('#decision-dialog')).not.toBeVisible();
+  await expect(editorPage.getByTestId('editor').locator('.cm-content')).toContainText('終了する前に保存する原稿');
+  expect((await json(session, '/api/state')).project).not.toBeNull();
+
+  await editorPage.locator('#shutdown-button').click();
+  const closed = editorPage.waitForEvent('close');
+  await editorPage.locator('#decision-primary').click();
+  await closed;
+  expect(editorPage.isClosed()).toBe(true);
+  expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(content);
+});
+
+test('自動で閉じられないタブに終了を表示し，草稿を次回に戻す', async ({ page, session }, testInfo) => {
+  await openProject(session);
+  const original = await readFile(path.join(session.project, 'main.tex'), 'utf8');
+  await page.addInitScript(() => {
+    window.__closeRequests = 0;
+    window.close = () => { window.__closeRequests++; };
+  });
+  await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
+  await expect(page.getByTestId('editor').locator('.cm-content')).toBeVisible();
+  await setAutoSave(page, false);
+  const draft = '% 終了後に草稿から戻す内容\n' + original;
+  await replaceEditor(page, draft);
+  await page.locator('#shutdown-button').click();
+  await page.locator('#decision-secondary').click();
+  await expect(page.getByTestId('closed-screen')).toBeVisible();
+  await expect(page.locator('#closed-message')).toContainText('Ctrl+W');
+  await expect(page.getByTestId('app-toolbar')).not.toBeVisible();
+  await expect(page.locator('#workbench')).not.toBeVisible();
+  expect(await page.evaluate(() => window.__closeRequests)).toBe(1);
+  expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(original);
+  await page.screenshot({ path: testInfo.outputPath('closed-tab.png') });
+
+  await session.restart();
+  await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
+  await page.getByTestId('review-drafts').click();
+  await page.getByTestId('restore-draft').click();
+  await expect(page.getByTestId('editor').locator('.cm-content')).toContainText('終了後に草稿から戻す内容');
+});
+
 test('改行を貼り付けて検索し，TeX のコマンドをそのまま置換する', async ({ page, session }, testInfo) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));

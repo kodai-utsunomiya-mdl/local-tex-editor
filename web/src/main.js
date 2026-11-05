@@ -140,6 +140,7 @@ async function api(path, { method = 'GET', body, timeout = 15000, projectRoot = 
 }
 
 function showError(error, action = null) {
+  if (state.closed) return;
   const message = error?.message || String(error);
   $('error-text').textContent = message;
   $('app-error').hidden = false;
@@ -617,6 +618,7 @@ function renderRecent() {
 }
 
 async function applyMeta(meta, resetProject = false) {
+  if (state.closed) return;
   if (!resetProject && state.meta?.project && meta.project?.root !== state.meta.project.root) {
     handleExternalProjectChange();
     return;
@@ -744,6 +746,7 @@ async function showSettings() {
   $('autosave-setting').checked = state.preferences.autoSave;
   $('editor-font-size').value = String(state.preferences.editorFontSize);
   $('main-field').hidden = !project; $('mode-field').hidden = !project;
+  $('shortcut-settings').hidden = state.meta?.platform !== 'windows' || state.meta?.shortcutsSupported === false;
   $('settings-error').hidden = true; $('settings-dialog').showModal();
   try {
     const meta = await api('/api/state');
@@ -774,6 +777,25 @@ async function saveSettings(event) {
   }
   catch (error) { $('settings-error').textContent = error.message || String(error); $('settings-error').hidden = false; }
   finally { setDialogBusy($('settings-dialog'), false); setOperation(''); }
+}
+
+async function createShortcut(destination) {
+  if (state.operation || state.closed || state.meta?.platform !== 'windows') return;
+  const label = destination === 'desktop' ? 'デスクトップのショートカット' : 'スタートメニューのショートカット';
+  const resultElement = $('shortcut-result');
+  resultElement.hidden = false; resultElement.classList.remove('error'); resultElement.setAttribute('role', 'status');
+  resultElement.textContent = `${label}を作成しています…`; $('shortcut-paths').hidden = true;
+  setOperation('shortcut'); setDialogBusy($('settings-dialog'), true);
+  try {
+    const result = await api('/api/shortcuts', { method: 'POST', body: { destination }, timeout: 60000, projectRoot: null });
+    resultElement.textContent = result.message || `${label}を作成しました．`;
+    $('shortcut-executable').textContent = result.executable || '';
+    $('shortcut-path').textContent = result.shortcut || '';
+    $('shortcut-paths').hidden = false;
+  } catch (error) {
+    resultElement.textContent = `${label}を作成できませんでした．${error.message || error}`;
+    resultElement.classList.add('error'); resultElement.setAttribute('role', 'alert');
+  } finally { setDialogBusy($('settings-dialog'), false); setOperation(''); }
 }
 
 async function refreshFiles() {
@@ -820,6 +842,7 @@ function updatePreviewNote() {
 }
 
 function applyBuild(build) {
+  if (state.closed) return;
   if (build && state.build) {
     if (build.id === state.build.id && state.build.status !== 'running' && build.status === 'running') return;
     if (build.id !== state.build.id && Date.parse(build.startedAt) < Date.parse(state.build.startedAt)) return;
@@ -868,7 +891,7 @@ async function pollBuild() {
   const expectedId = state.build?.id;
   try {
     const build = await api('/api/build');
-    if (generation !== state.projectGeneration) return;
+    if (state.closed || generation !== state.projectGeneration) return;
     if (expectedId && state.build?.id !== expectedId && build?.id !== state.build?.id) return;
     applyBuild(build);
   }
@@ -961,7 +984,7 @@ async function heartbeat() {
   const toolsGeneration = state.toolsGeneration;
   try {
     const meta = await api('/api/state');
-    if (generation !== state.projectGeneration) return;
+    if (state.closed || generation !== state.projectGeneration) return;
     if (state.meta?.project && meta.project?.root !== state.meta.project.root) { if (!state.externalProjectChanged) handleExternalProjectChange(); return; }
     if (toolsGeneration === state.toolsGeneration) updateTools(meta);
     if (!isRunning() && meta.build && meta.build.id !== state.build?.id) applyBuild(meta.build);
@@ -979,13 +1002,20 @@ async function shutdown() {
     }
     syncDrafts(); persistSession(); await sessionStore.flush();
     await api('/api/shutdown', { method: 'POST', body: {}, timeout: 30000 });
-    state.closed = true; clearTimeout(state.pollTimer); clearInterval(state.heartbeat); setConnected(false);
+    state.closed = true; ++state.projectGeneration; ++state.openSequence;
+    for (const timer of [state.pollTimer, state.autoSaveTimer, state.draftTimer, state.sessionTimer, state.outlineTimer, toastTimer, lineFlashTimer]) clearTimeout(timer);
+    clearInterval(state.heartbeat); state.build = null; setConnected(false);
     try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* No persistent storage is required. */ }
-    $('workbench').hidden = true; $('welcome').hidden = false;
-    $('welcome').querySelector('h1').textContent = 'アプリを終了しました';
-    $('welcome').querySelector('.welcome-description').textContent = 'このタブを閉じてください．次回は実行ファイルから開けます．';
-    $('welcome-open').hidden = true; $('welcome-recent').hidden = true; $('welcome').querySelector('.welcome-note').hidden = true;
+    state.editorZoomCleanup?.(); state.editorZoomCleanup = null; state.editor?.destroy(); state.editor = null;
+    state.documents.clear(); state.assets.clear(); assetPreview.hide(); viewer.reset().catch(() => {});
+    $('app-shell').classList.add('app-closed');
+    $('workbench').hidden = true; $('welcome').hidden = true; $('recovery-banner').hidden = true; $('toast').hidden = true;
+    $('closed-screen').hidden = false;
     clearError();
+    try { window.close(); } catch { /* Some browsers require the user to close an existing tab. */ }
+    setTimeout(() => {
+      $('closed-message').textContent = 'このタブを閉じてください (Ctrl+W)．次回は Local TeX Editor のショートカットまたは実行ファイルを開いてください．';
+    }, 600);
   } finally { setOperation(state.closed ? 'closed' : ''); }
 }
 
@@ -1371,6 +1401,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
 
 onClick('show-project', showProjectDialog); onClick('welcome-open', showProjectDialog);
 onClick('settings-button', showSettings); onClick('main-document', showSettings);
+onClick('shortcut-start-menu', () => createShortcut('start-menu')); onClick('shortcut-desktop', () => createShortcut('desktop'));
 onClick('copy-synctex-setup', async () => { await navigator.clipboard.writeText($('synctex-install-commands').textContent); toast('コマンドをコピーしました．'); });
 onClick('pick-project', pickProject); onClick('cancel-picker', cancelPicker); onClick('shutdown-button', shutdown);
 onClick('save-button', saveCurrent); onClick('compile-button', startBuild); onClick('stop-button', stopBuild);

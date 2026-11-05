@@ -89,6 +89,10 @@ h1, h2, h3, p { margin: 0; }
 .welcome-note { font-size: 12px; line-height: 1.8; margin-top: 12px; color: var(--muted); }
 .welcome-recent { margin: 28px 0 0; text-align: left; border-top: 1px solid var(--border); padding-top: 19px; }
 .welcome-recent h2 { font-size: 11px; font-weight: 500; color: #8a96a2; margin-bottom: 11px; }
+.app-closed > .app-header, .app-closed > .status-bar { display: none; }
+.closed-screen { flex: 1 1 auto; padding: 55px 28px; color: var(--text); background: var(--subtle); }
+.closed-screen h1 { font-size: 20px; font-weight: 600; margin-bottom: 14px; }
+.closed-screen p { max-width: 620px; color: var(--secondary); font-size: 13px; line-height: 1.9; }
 .recent-project { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; border: 0; background: transparent; border-radius: 6px; color: #526474; text-align: left; padding: 9px 10px; overflow: hidden; }
 .recent-project:hover { background: #eaf0f2; color: var(--accent); }
 .recent-project strong { font-size: 12px; font-weight: 550; }
@@ -236,6 +240,15 @@ body.resizing { cursor: col-resize; user-select: none; }
 .picker-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 9px; padding: 9px 10px; color: var(--secondary); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; line-height: 1.7; }
 .picker-status > span:nth-child(2) { flex: 1 1 170px; }
 .synctex-setup pre { margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--subtle); color: var(--text); font: 11px/1.7 Consolas, "Cascadia Code", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.shortcut-settings { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.shortcut-settings h3 { color: var(--text); font-size: 12px; font-weight: 600; }
+.shortcut-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.shortcut-result { margin-top: 12px; color: var(--accent); font-size: 11px; line-height: 1.8; }
+.shortcut-result.error { color: var(--danger); }
+.shortcut-paths { margin: 9px 0 0; font-size: 10px; line-height: 1.7; }
+.shortcut-paths > div { margin-top: 7px; }
+.shortcut-paths dt { color: var(--secondary); }
+.shortcut-paths dd { margin: 3px 0 0; color: var(--muted); overflow-wrap: anywhere; user-select: text; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 30px; }
 .dialog-actions .button { padding: 9px 15px; }
 .dialog-recent { margin-top: 21px; padding-top: 16px; border-top: 1px solid var(--border); }

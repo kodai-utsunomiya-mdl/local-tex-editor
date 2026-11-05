@@ -123,7 +123,13 @@ CLI の形式と座標は TeX Live の [synctex_main.c](https://github.com/TeX-L
 
 ### POST /api/shutdown
 
-コンパイルを停止し，`{"ok":true}` を返してサーバーを終了する．UI は未保存の編集がある場合に確認する．
+コンパイルを停止し，`{"ok":true}` を返してサーバーを終了する．UI は未保存の編集がある場合に確認し，保存または草稿の記録を済ませてから呼ぶ．成功後に `window.close()` を呼び，ブラウザがタブを残した場合は終了画面へ切り替える．
+
+### POST /api/shortcuts
+
+Windows で起動用のショートカットを作成する．入力は `{ "destination":"start-menu" }` または `{ "destination":"desktop" }`．実行ファイルをユーザーの LocalAppData の `Programs\LocalTeXEditor\local-tex-editor.exe` に配置し，選んだ Known Folder へ `Local TeX Editor.lnk` を作る．成功時は `{ "executable":"...", "shortcut":"...", "message":"..." }` を返す．UI は設定画面のボタン操作から呼ぶ．
+
+配置先とショートカット名はアプリで固定する．アプリ自身が配置した旧バージョンは更新できる．起動している旧バージョンのファイルを置き換えられない場合は，終了してから再度実行する案内を返す．
 
 ### GET /api/storage?key=文字列
 

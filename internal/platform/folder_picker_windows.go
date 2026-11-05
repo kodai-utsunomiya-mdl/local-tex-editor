@@ -7,17 +7,14 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 const (
 	folderDialogTitle = "TeX のプロジェクトフォルダーを選択"
 	hresultCancelled  = 0x800704c7
-	wmTimer           = 0x0113
-	wmPickerFocus     = 0x8001
-	wmPickerCancel    = 0x8002
 )
 
 type nativeGUID struct {
@@ -30,7 +27,6 @@ type nativeGUID struct {
 var (
 	classFileOpenDialog = nativeGUID{0xdc1c5a9c, 0xe88a, 0x4dde, [8]byte{0xa5, 0xa1, 0x60, 0xf8, 0x2a, 0x20, 0xae, 0xf7}}
 	iidFileOpenDialog   = nativeGUID{0xd57c7288, 0xd4ad, 0x4768, [8]byte{0xbe, 0x02, 0x9d, 0x96, 0x95, 0x32, 0xd9, 0x60}}
-	iidOleWindow        = nativeGUID{0x00000114, 0, 0, [8]byte{0xc0, 0, 0, 0, 0, 0, 0, 0x46}}
 )
 
 type nativeCOMObject struct {
@@ -83,12 +79,7 @@ func showNativeFolderDialog(request *folderPickRequest) (string, error) {
 	if result = dialog.call(17, uintptr(unsafe.Pointer(title))); int32(result) < 0 {
 		return "", folderDialogError("設定", result)
 	}
-	var window *nativeCOMObject
-	if result = dialog.call(0, uintptr(unsafe.Pointer(&iidOleWindow)), uintptr(unsafe.Pointer(&window))); int32(result) < 0 || window == nil {
-		return "", folderDialogError("準備", result)
-	}
-	defer window.call(2)
-	controller, err := newFolderDialogController(request, dialog, window, owner)
+	controller, err := newFolderDialogController(request, owner)
 	if err != nil {
 		return "", err
 	}
@@ -145,20 +136,10 @@ type nativeWindowClass struct {
 }
 
 type folderDialogController struct {
-	id           uintptr
-	hwnd         uintptr
-	request      *folderPickRequest
-	dialog       *nativeCOMObject
-	window       *nativeCOMObject
-	pendingFocus bool
+	hwnd    uintptr
+	request *folderPickRequest
 }
 
-var folderDialogControllers = struct {
-	sync.Mutex
-	items map[uintptr]*folderDialogController
-}{items: make(map[uintptr]*folderDialogController)}
-
-var folderControllerSequence atomic.Uintptr
 var folderControllerClassOnce sync.Once
 var folderControllerClassError error
 var folderControllerClassName = syscall.StringToUTF16Ptr("LocalTeXEditor.FolderDialogController")
@@ -177,14 +158,14 @@ func registerFolderControllerClass() error {
 	return folderControllerClassError
 }
 
-func newFolderDialogController(request *folderPickRequest, dialog, window *nativeCOMObject, owner uintptr) (*folderDialogController, error) {
+func newFolderDialogController(request *folderPickRequest, owner uintptr) (*folderDialogController, error) {
 	if err := registerFolderControllerClass(); err != nil {
 		return nil, err
 	}
 	instance, _, _ := kernel32.NewProc("GetModuleHandleW").Call(0)
 	// The dialog disables this hidden owner, leaving the browser's Cancel and
 	// Show-dialog buttons usable. Its ownership chain still places the dialog
-	// above the browser. Messages run on the same STA while Show is modal.
+	// above the browser.
 	var bounds struct{ left, top, right, bottom int32 }
 	if owner != 0 {
 		user32.NewProc("GetWindowRect").Call(owner, uintptr(unsafe.Pointer(&bounds)))
@@ -197,84 +178,104 @@ func newFolderDialogController(request *folderPickRequest, dialog, window *nativ
 	if hwnd == 0 {
 		return nil, fmt.Errorf("フォルダーの選択画面を準備できません: %w", err)
 	}
-	controller := &folderDialogController{id: folderControllerSequence.Add(1), hwnd: hwnd, request: request, dialog: dialog, window: window, pendingFocus: true}
-	folderDialogControllers.Lock()
-	folderDialogControllers.items[hwnd] = controller
-	folderDialogControllers.Unlock()
-	timer, _, err := user32.NewProc("SetTimer").Call(hwnd, 1, 50, 0)
-	if timer == 0 {
-		controller.destroy()
-		return nil, fmt.Errorf("フォルダーの選択画面を準備できません: %w", err)
-	}
-	return controller, nil
+	return &folderDialogController{hwnd: hwnd, request: request}, nil
 }
 
 func (controller *folderDialogController) forwardRequests() func() {
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		cancelled, pendingFocus := false, true
+		cancelRequest := controller.request.ctx.Done()
 		for {
 			select {
 			case <-controller.request.focus:
-				user32.NewProc("PostMessageW").Call(controller.hwnd, wmPickerFocus, controller.id, 0)
-			case <-controller.request.ctx.Done():
-				user32.NewProc("PostMessageW").Call(controller.hwnd, wmPickerCancel, controller.id, 0)
-				return
+				pendingFocus = true
+			case <-cancelRequest:
+				cancelled = true
+				cancelRequest = nil
+			case <-ticker.C:
 			case <-stop:
 				return
 			}
+			hwnd := controller.dialogWindow()
+			if hwnd == 0 {
+				continue
+			}
+			if cancelled {
+				// Address the dialog itself. Its modal loop does not reliably
+				// dispatch messages sent to a separate hidden owner window.
+				user32.NewProc("PostMessageW").Call(hwnd, 0x0010, 0, 0) // WM_CLOSE
+				continue
+			}
+			if pendingFocus {
+				if visible, _, _ := user32.NewProc("IsWindowVisible").Call(hwnd); visible != 0 {
+					bringFolderDialogForward(hwnd)
+					pendingFocus = false
+				}
+			}
 		}
 	}()
-	return func() { close(stop); <-done }
+	return func() {
+		close(stop)
+		// SetForegroundWindow can send a message across threads. Continue
+		// servicing this STA until the sender finishes before freeing its owner.
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			var message nativeWindowMessage
+			if ok, _, _ := user32.NewProc("PeekMessageW").Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0, 1); ok != 0 {
+				user32.NewProc("TranslateMessage").Call(uintptr(unsafe.Pointer(&message)))
+				user32.NewProc("DispatchMessageW").Call(uintptr(unsafe.Pointer(&message)))
+			} else {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}
 }
 
 func (controller *folderDialogController) destroy() {
-	user32.NewProc("KillTimer").Call(controller.hwnd, 1)
-	folderDialogControllers.Lock()
-	delete(folderDialogControllers.items, controller.hwnd)
-	folderDialogControllers.Unlock()
 	user32.NewProc("DestroyWindow").Call(controller.hwnd)
 }
 
 func folderControllerWindowProcedure(hwnd uintptr, message uint32, wparam, lparam uintptr) uintptr {
-	if message == wmTimer || message == wmPickerFocus || message == wmPickerCancel {
-		folderDialogControllers.Lock()
-		controller := folderDialogControllers.items[hwnd]
-		folderDialogControllers.Unlock()
-		if controller != nil && (message == wmTimer || wparam == controller.id) {
-			if message == wmPickerFocus {
-				controller.pendingFocus = true
-			}
-			controller.update()
-			return 0
-		}
-	}
 	result, _, _ := user32.NewProc("DefWindowProcW").Call(hwnd, uintptr(message), wparam, lparam)
 	return result
 }
 
-func (controller *folderDialogController) update() {
-	if controller.request.ctx.Err() != nil {
-		// IFileDialog::Close must be called on this STA, not the HTTP goroutine.
-		controller.dialog.call(23, hresultCancelled)
-		return
+type nativeWindowMessage struct {
+	hwnd           uintptr
+	message        uint32
+	wparam, lparam uintptr
+	time           uint32
+	x, y           int32
+	private        uint32
+}
+
+func (controller *folderDialogController) dialogWindow() uintptr {
+	title := syscall.StringToUTF16Ptr(folderDialogTitle)
+	var previous uintptr
+	for {
+		hwnd, _, _ := user32.NewProc("FindWindowExW").Call(0, previous, 0, uintptr(unsafe.Pointer(title)))
+		if hwnd == 0 {
+			return 0
+		}
+		owner, _, _ := user32.NewProc("GetWindow").Call(hwnd, 4) // GW_OWNER
+		if owner == controller.hwnd {
+			return hwnd
+		}
+		previous = hwnd
 	}
-	if !controller.pendingFocus {
-		return
-	}
-	var hwnd uintptr
-	if result := controller.window.call(3, uintptr(unsafe.Pointer(&hwnd))); int32(result) < 0 || hwnd == 0 {
-		return
-	}
-	visible, _, _ := user32.NewProc("IsWindowVisible").Call(hwnd)
-	if visible == 0 {
-		return
-	}
-	controller.pendingFocus = false
-	bringFolderDialogForward(hwnd)
 }
 
 func bringFolderDialogForward(hwnd uintptr) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	iconic, _, _ := user32.NewProc("IsIconic").Call(hwnd)
 	if iconic != 0 {
 		user32.NewProc("ShowWindow").Call(hwnd, 9) // SW_RESTORE
