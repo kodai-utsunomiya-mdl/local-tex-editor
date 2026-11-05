@@ -605,7 +605,7 @@ function updatePreviewNote() {
   else if (build.status === 'cancelled') { note.textContent = 'コンパイルを停止しました．前回成功した PDF を表示しています．'; label.textContent = '前回の PDF'; }
   else if (build.status === 'running') { note.textContent = 'コンパイル中です．完了すると PDF が更新されます．'; label.textContent = '更新待ち'; }
   else if (build.sourceChanged || dirtyDocuments().length) { note.textContent = '原稿に変更があります．最新の内容を確認するにはコンパイルしてください．'; label.textContent = '原稿に変更あり'; }
-  else { label.textContent = viewer.document ? '更新済み' : '読み込み中'; return; }
+  else { label.textContent = viewer.document && viewer.buildId === build.pdfBuildId ? '更新済み' : '読み込み中'; return; }
   note.hidden = false; label.classList.add('stale');
 }
 
@@ -768,7 +768,11 @@ async function shutdown() {
   } finally { setOperation(state.closed ? 'closed' : ''); }
 }
 
-const viewer = new PDFViewer({ token, onError: error => showError(error), onReady: () => updatePreviewNote() });
+const viewer = new PDFViewer({
+  token,
+  onError: error => showError(error, { label: 'PDF を再表示', run: async () => { clearError(); await viewer.retry(); } }),
+  onReady: () => updatePreviewNote(),
+});
 
 onClick('show-project', showProjectDialog); onClick('welcome-open', showProjectDialog);
 onClick('settings-button', showSettings); onClick('main-document', showSettings);

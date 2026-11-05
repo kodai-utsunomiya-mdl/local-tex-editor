@@ -48,7 +48,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force bin | Out-Null
-          go build -trimpath -ldflags='-s -w -H=windowsgui -X main.version=0.1.0' -o bin/local-tex-editor.exe ./cmd/local-tex-editor
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          go build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=$version" -o bin/local-tex-editor.exe ./cmd/local-tex-editor
           if ($LASTEXITCODE -ne 0) { throw 'The Windows build failed.' }
           "LOCAL_TEX_EDITOR_TEST_EXE=$((Resolve-Path bin/local-tex-editor.exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -104,3 +105,34 @@ jobs:
           path: dist/windows/
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: Publish the tested application
+    needs: windows
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Create a release when the version is new
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+          gh run download "$GITHUB_RUN_ID" --name local-tex-editor-windows-x64 --dir release-package
+          archive="local-tex-editor-$version-windows-x64.zip"
+          (cd release-package && zip -r "../$archive" .)
+          sha256sum "$archive" > SHA256SUMS.txt
+          gh release create "$tag" "$archive" SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "Local TeX Editor $version" \
+            --notes-file "release-notes/$tag.md"

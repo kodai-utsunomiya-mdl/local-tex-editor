@@ -15,6 +15,8 @@ export class PDFViewer {
     this.textLayer = null;
     this.lastPage = null;
     this.buildId = '';
+    this.requestedBuildId = '';
+    this.lastRequest = null;
     this.pageNumber = 1;
     this.generation = 0;
     this.renderGeneration = 0;
@@ -56,12 +58,13 @@ export class PDFViewer {
   }
 
   async load(buildId, projectRoot) {
-    if (!buildId || buildId === this.buildId) return;
+    if (!buildId || buildId === this.requestedBuildId) return;
     const generation = ++this.generation;
     const desiredPage = this.pageNumber;
     const scrollTop = this.elements.scroll.scrollTop;
     const scrollLeft = this.elements.scroll.scrollLeft;
-    this.buildId = buildId;
+    this.requestedBuildId = buildId;
+    this.lastRequest = { buildId, projectRoot };
     this.elements.loading.hidden = false;
     const oldLoading = this.loadingTask;
     this.loadingTask = null;
@@ -85,6 +88,7 @@ export class PDFViewer {
       if (generation !== this.generation) { await nextDocument.destroy(); return; }
       const previousDocument = this.document;
       this.document = nextDocument;
+      this.buildId = buildId;
       this.pageNumber = Math.min(Math.max(desiredPage, 1), nextDocument.numPages);
       this.lastPage = null;
       this.updateControls();
@@ -98,6 +102,7 @@ export class PDFViewer {
       this.onReady?.(buildId, nextDocument.numPages);
     } catch (error) {
       if (generation !== this.generation || isCancelled(error)) return;
+      if (task !== this.document?.loadingTask) await task.destroy().catch(() => {});
       if (!this.document) {
         this.elements.stage.hidden = true;
         this.elements.empty.hidden = false;
@@ -206,6 +211,18 @@ export class PDFViewer {
     if (!isCancelled(error)) this.onError?.(new Error(`PDF の表示に失敗しました．${error?.message || error}`));
   }
 
+  async retry() {
+    const request = this.lastRequest;
+    if (!request) return;
+    if (this.document && this.buildId === request.buildId) {
+      await this.render(true);
+      this.onReady?.(this.buildId, this.document.numPages);
+    } else {
+      this.requestedBuildId = '';
+      await this.load(request.buildId, request.projectRoot);
+    }
+  }
+
   async reset() {
     ++this.generation;
     const loadingTask = this.loadingTask;
@@ -213,9 +230,12 @@ export class PDFViewer {
     this.loadingTask = null;
     this.document = null;
     this.buildId = '';
+    this.requestedBuildId = '';
+    this.lastRequest = null;
     this.pageNumber = 1;
     await this.cancelRender();
-    await (document ? document.destroy() : loadingTask?.destroy())?.catch(() => {});
+    await document?.destroy().catch(() => {});
+    if (loadingTask && loadingTask !== document?.loadingTask) await loadingTask.destroy().catch(() => {});
     this.lastPage = null;
     this.elements.stage.hidden = true;
     this.elements.empty.hidden = false;

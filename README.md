@@ -6,8 +6,8 @@ Windows のブラウザで TeX の原稿を編集し，PC にある TeX Live で
 
 ## ダウンロードして起動する
 
-1. このリポジトリの **Actions** を開き，成功した Windows の実行を選ぶ．
-2. **Artifacts** の `local-tex-editor-windows-x64` をダウンロードする．
+1. [Releases](https://github.com/kodai-utsunomiya-mdl/local-tex-editor/releases) を開き，最新のバージョンを選ぶ．
+2. **Assets** の `local-tex-editor-0.1.0-windows-x64.zip` をダウンロードする．`Source code` は開発用のソースである．
 3. ZIP を展開し，`local-tex-editor.exe` をダブルクリックする．
 4. 開いたブラウザで原稿のフォルダーを選ぶ．フォルダーのパスを入力して開くこともできる．
 5. TeX Live の場所が自動で見つからない場合は，設定に `C:\texlive\2025\bin\windows` など，`latexmk.exe` があるフォルダーを指定する．
@@ -85,6 +85,8 @@ go build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=0.1.0" -o dist/
 `--ready-file` は自動テストなどで使用する．このファイルには，アプリを操作するための token が含まれる．アプリを終了すると削除する．
 
 GitHub Actions は Windows で Go のテストとブラウザのテストを実行し，成功した実行のアプリを artifact として保存する．短い日本語の原稿と参考文献を使い，保存，コンパイル，PDF の表示，エラーの表示，停止を確認する．
+
+`main` のテストが成功し，`package.json` のバージョンに対応する Release がまだ存在しない場合は，その実行で確認したアプリを Releases に公開する．新しいバージョンを作る際は，`package.json` を更新し，`release-notes/v<バージョン>.md` を追加する．各ブランチで確認したアプリは，Actions の **Artifacts** にある `local-tex-editor-windows-x64` からも取得できる．
 
 ## 利用するライブラリ
 

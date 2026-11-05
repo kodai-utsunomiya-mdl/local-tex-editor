@@ -36,7 +36,20 @@ func testApp(t *testing.T) (*App, string) {
 	}
 	a.SetAddress("127.0.0.1:8765")
 	t.Cleanup(func() { _ = a.Close() })
-	return a, root
+	// The browser sends the root returned by the API. On Windows, opening a
+	// project can expand a temporary folder's 8.3 path to its long spelling.
+	response := apiRequest(a, http.MethodGet, "/api/state", nil, nil)
+	var state State
+	if response.Code != http.StatusOK {
+		t.Fatalf("could not read the opened project: %s", response.Body.String())
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Project == nil {
+		t.Fatal("the opened project is missing from the API response")
+	}
+	return a, state.Project.Root
 }
 
 func apiRequest(a *App, method, path string, value any, headers map[string]string) *httptest.ResponseRecorder {
