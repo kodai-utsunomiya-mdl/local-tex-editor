@@ -1,0 +1,9 @@
+node_modules/
+web/dist/*
+!web/dist/.keep
+/bin/
+/dist/
+playwright-report/
+test-results/
+*.log
+*.exe

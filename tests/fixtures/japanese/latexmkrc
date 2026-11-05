@@ -1,0 +1,6 @@
+$pdf_mode = 3;
+$latex = 'uplatex -kanji=utf8 -no-guess-input-enc %O %S';
+$bibtex = 'upbibtex %O %B';
+$dvipdf = 'dvipdfmx %O -o %D %S';
+$max_repeat = 5;
+print "LOCAL_TEX_EDITOR_RC_LOADED\n";

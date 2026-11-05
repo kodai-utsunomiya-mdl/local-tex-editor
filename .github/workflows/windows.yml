@@ -1,0 +1,106 @@
+name: Build and test
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows with TeX Live and Chromium
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      CGO_ENABLED: '0'
+      CTAN_REPO: https://mirror.ctan.org/systems/texlive/tlnet
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25.x'
+          cache: false
+
+      - name: Set up Node.js for the build
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build the frontend
+        run: npm run build
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Build the Windows application
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bin | Out-Null
+          go build -trimpath -ldflags='-s -w -H=windowsgui -X main.version=0.1.0' -o bin/local-tex-editor.exe ./cmd/local-tex-editor
+          if ($LASTEXITCODE -ne 0) { throw 'The Windows build failed.' }
+          "LOCAL_TEX_EDITOR_TEST_EXE=$((Resolve-Path bin/local-tex-editor.exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up TeX Live for tests
+        uses: r-lib/actions/setup-tinytex@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2
+
+      - name: Install Japanese TeX packages
+        shell: pwsh
+        run: |
+          tlmgr update --self
+          if ($LASTEXITCODE -ne 0) { throw 'Could not update the TeX Live package manager.' }
+          tlmgr install latexmk uptex uptex-base uplatex platex jsclasses dvipdfmx natbib ptex-fonts ptex-fontmaps haranoaji
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install the TeX packages needed for the tests.' }
+          fmtutil-sys --byfmt uplatex
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the upLaTeX format.' }
+          updmap-sys --setoption kanjiEmbed haranoaji
+          if ($LASTEXITCODE -ne 0) { throw 'Could not configure the Japanese fonts.' }
+          $texBin = Split-Path -Parent (Get-Command uplatex.exe).Source
+          "LOCAL_TEX_EDITOR_TEST_TEX_BIN=$texBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & (Join-Path $texBin 'latexmk.exe') -v
+          if ($LASTEXITCODE -ne 0) { throw 'latexmk could not start.' }
+          & (Join-Path $texBin 'upbibtex.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'upBibTeX could not start.' }
+
+      - name: Install Chromium for browser tests
+        run: npx playwright install chromium
+
+      - name: Test editing and compilation in the browser
+        run: npm test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Prepare the download
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/windows | Out-Null
+          Copy-Item bin/local-tex-editor.exe, README.md, LICENSE -Destination dist/windows
+          Get-FileHash dist/windows/local-tex-editor.exe -Algorithm SHA256 | Format-List
+          $size = (Get-Item dist/windows/local-tex-editor.exe).Length
+          "Windows application: $size bytes" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload the tested Windows application
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: local-tex-editor-windows-x64
+          path: dist/windows/
+          if-no-files-found: error
+          retention-days: 30

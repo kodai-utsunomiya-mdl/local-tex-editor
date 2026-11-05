@@ -1,0 +1,19 @@
+\documentclass[uplatex,dvipdfmx]{jsarticle}
+\usepackage[numbers]{natbib}
+\title{Local TeX Editor の動作確認}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+日本語と空白を含むフォルダーから，既存の設定で原稿をコンパイルする．
+参考文献の例として，\citep{sample2026} を引用する．
+
+\newpage
+\section{二ページ目}
+ブラウザでページを移動し，原稿を更新した後もこのページを表示する．
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+\end{document}
