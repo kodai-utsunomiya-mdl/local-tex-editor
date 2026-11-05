@@ -101,6 +101,38 @@ async function attachBuildFiles(testInfo, directory, prefix, recursive = false) 
   }
 }
 
+async function recordEmptySyncTeX(testInfo, session, buildId, forward) {
+  const result = { includedFile: forward, mainFile: null, cli: [] };
+  result.mainFile = await json(session, '/api/synctex/forward', {
+    method: 'POST', data: { buildId, path: 'main.tex', line: 10, column: 1 },
+  }).catch(error => ({ error: error.message }));
+  const cacheRoot = path.join(session.temp, 'config', 'cache');
+  const directories = await readdir(cacheRoot, { withFileTypes: true }).catch(() => []);
+  for (const directory of directories.filter(entry => entry.isDirectory())) {
+    const cwd = path.join(cacheRoot, directory.name);
+    const metadata = await readFile(path.join(cwd, `pdf-${buildId}.json`), 'utf8')
+      .then(JSON.parse, () => null);
+    if (!metadata?.synctex?.bin) continue;
+    const program = path.join(metadata.synctex.bin, process.platform === 'win32' ? 'synctex.exe' : 'synctex');
+    const environment = Object.fromEntries(Object.entries(process.env)
+      .filter(([key]) => !/^SYNCTEX_(?:VIEWER|EDITOR|BUILD_DIRECTORY)$/i.test(key)));
+    for (const input of metadata.synctex.inputs || []) {
+      if (!['main.tex', '追加の 原稿.tex'].includes(input.path)) continue;
+      const line = input.path === 'main.tex' ? 10 : 2;
+      const args = ['view', '-i', `${line}:1:${input.alias}`, '-o', `pdf-${buildId}.pdf`];
+      const output = await execFileAsync(program, args, {
+        cwd, windowsHide: true, timeout: 10_000, env: environment,
+      }).then(value => ({ ...value, exitCode: 0 }), error => ({
+        stdout: error.stdout, stderr: error.stderr, exitCode: error.code, message: error.message,
+      }));
+      result.cli.push({ source: input.path, args, ...output });
+    }
+  }
+  const file = testInfo.outputPath('synctex-empty-result.json');
+  await writeFile(file, JSON.stringify(result, null, 2));
+  await testInfo.attach('synctex-empty-result.json', { path: file, contentType: 'application/json' });
+}
+
 const test = base.extend({
   session: async ({}, use, testInfo) => {
     await stat(executable).catch(() => {
@@ -311,7 +343,7 @@ test('日本語の原稿を編集し，参考文献と PDF を更新する', asy
   expect(errors).toEqual([]);
 });
 
-test('日本語のファイル名で原稿と PDF の位置を行き来する', async ({ page, session }) => {
+test('日本語のファイル名で原稿と PDF の位置を行き来する', async ({ page, session }, testInfo) => {
   const sourcePath = '追加の 原稿.tex';
   await openProject(session);
   await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
@@ -326,7 +358,8 @@ test('日本語のファイル名で原稿と PDF の位置を行き来する', 
   });
   expect(forward.buildId).toBe(finished.pdfBuildId);
   expect(forward.sourceChanged).toBe(false);
-  expect(forward.locations.length).toBeGreaterThan(0);
+  if (!forward.locations.length) await recordEmptySyncTeX(testInfo, session, finished.pdfBuildId, forward);
+  expect(forward.locations.length, JSON.stringify(forward)).toBeGreaterThan(0);
   const location = forward.locations.find(item => item.page === 2);
   expect(location).toBeDefined();
   expect(location.width).toBeGreaterThan(0);

@@ -58,3 +58,5 @@ func ShowError(message string) {}
 func DecodeOutput(data []byte) string { return strings.ToValidUTF8(string(data), "\uFFFD") }
 
 func EncodeFileName(name string) []byte { return []byte(name) }
+
+func ShortPath(path string) (string, error) { return path, nil }

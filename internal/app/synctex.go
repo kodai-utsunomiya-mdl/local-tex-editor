@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -439,6 +440,14 @@ func resolveRecorderSources(root string, data []byte, revisions map[string]strin
 // Unicode file name may become question marks when the SyncTeX writer converts
 // it to Windows' ANSI code page. Only a unique match is used for navigation.
 func newSyncSourceResolver(root string, revisions map[string]string, recorded map[string]bool, encode func(string) []byte) func(string) string {
+	roots := []string{root}
+	if short, err := platform.ShortPath(root); err == nil && !samePath(root, short) {
+		roots = append(roots, short)
+	}
+	return syncSourceResolverForRoots(root, roots, revisions, recorded, encode)
+}
+
+func syncSourceResolverForRoots(root string, roots []string, revisions map[string]string, recorded map[string]bool, encode func(string) []byte) func(string) string {
 	paths := make(map[string]bool)
 	for path := range revisions {
 		if len(recorded) == 0 || recorded[path] {
@@ -451,8 +460,12 @@ func newSyncSourceResolver(root string, revisions map[string]string, recorded ma
 	spellings := make(map[string]string)
 	for path := range paths {
 		native := filepath.FromSlash(path)
-		absolute := filepath.Join(root, native)
-		for _, name := range []string{path, "./" + path, native, "." + string(filepath.Separator) + native, absolute, filepath.ToSlash(absolute)} {
+		names := []string{path, "./" + path, native, "." + string(filepath.Separator) + native}
+		for _, prefix := range roots {
+			absolute := filepath.Join(prefix, native)
+			names = append(names, absolute, filepath.ToSlash(absolute))
+		}
+		for _, name := range names {
 			for _, spelling := range []string{name, string(encode(name))} {
 				key := syncNameKey(spelling)
 				if previous, exists := spellings[key]; exists && previous != path {
@@ -473,24 +486,17 @@ func newSyncSourceResolver(root string, revisions map[string]string, recorded ma
 }
 
 func syncNameKey(raw string) string {
+	// Decode before touching separators: a CP932 character can contain a
+	// backslash as its second byte. TeX also prepends cwd without removing
+	// ./ from its relative input name, so compare the cleaned spelling even
+	// when Windows has already replaced characters in that cwd with ?.
+	raw = platform.DecodeOutput([]byte(raw))
 	raw = strings.TrimSuffix(strings.TrimPrefix(raw, `"`), `"`)
+	raw = path.Clean(strings.ReplaceAll(raw, `\`, "/"))
 	if runtime.GOOS != "windows" {
 		return raw
 	}
-	// A trail byte of a Windows multibyte character can be an ASCII letter.
-	// Case folding is therefore limited to entirely ASCII spellings.
-	data := []byte(raw)
-	for _, value := range data {
-		if value >= 0x80 {
-			return raw
-		}
-	}
-	for index, value := range data {
-		if value >= 'A' && value <= 'Z' {
-			data[index] += 'a' - 'A'
-		}
-	}
-	return string(data)
+	return strings.ToLower(raw)
 }
 
 func syncProjectPath(root, raw string) (string, error) {

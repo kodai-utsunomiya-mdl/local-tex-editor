@@ -117,6 +117,19 @@ func TestSyncTeXRecorderAlsoMatchesLegacyNames(t *testing.T) {
 	if actual := resolve(string(lossy("./" + name))); actual != name {
 		t.Fatalf("a partial recorder list removed a valid source: %q", actual)
 	}
+	// TeX's generic_synctex_get_current_name concatenates cwd and the
+	// original relative name, leaving /./ in an absolute Input path.
+	absolute := filepath.ToSlash(root) + "/./" + name
+	if actual := resolve(string(lossy(absolute))); actual != name {
+		t.Fatalf("the absolute legacy spelling lost its source: %q", actual)
+	}
+	// In the Windows integration fixture, TeX additionally uses an 8.3 cwd.
+	// The actual file name remains in the system code page after that prefix.
+	shortRoot := "C:/Users/RUNNER~1/AppData/Local/Temp/LTEX-I~1/WITHSP~1"
+	resolve = syncSourceResolverForRoots(root, []string{root, shortRoot}, revisions, recorded, lossy)
+	if actual := resolve(shortRoot + "/./??? ??.tex"); actual != name {
+		t.Fatalf("the 8.3 working directory lost its Unicode source: %q", actual)
+	}
 }
 
 func TestCancellingWhileCopyingLeavesTheDisplayedPDFAvailable(t *testing.T) {

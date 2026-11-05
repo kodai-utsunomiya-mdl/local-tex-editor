@@ -95,6 +95,8 @@ CLI は PDF を生成した TeX Live の bin にある `synctex` を，シェル
 
 CLI の形式と座標は TeX Live の [synctex_main.c](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/synctexdir/synctex_main.c) の `synctex help view` / `synctex help edit` と出力処理に基づく．forward のボックスは CLI の h / v / W / H から x = h，y = v - H，width = W，height = H とする (負の寸法は向きに合わせて左上と正の幅へ直す)．Input 名を置き換えた際の byte 数は [synctex.c](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/synctexdir/synctex.c) の `synctex_record_anchor` に従って更新する．
 
+[texmfmp.c](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/lib/texmfmp.c) の `generic_synctex_get_current_name` は相対名へ working directory を前置するため，Input に `..././原稿.tex` が記録される．Windows では working directory が 8.3 形式になる場合もあるため，`GetShortPathNameW` で取得したプロジェクトのパスも照合の候補に加える．照合では文字コードを復元した後に `/./` 等を整理する．CP932 の後半 byte にある `0x5c` をパスの区切りとして扱わない．
+
 ### POST /api/shutdown
 
 コンパイルを停止し，`{"ok":true}` を返してサーバーを終了する．UI は未保存の編集がある場合に確認する．

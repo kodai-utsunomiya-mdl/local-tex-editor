@@ -3,6 +3,8 @@
 package platform
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -43,5 +45,24 @@ func TestEncodeFileNameUsesTheSystemCodePage(t *testing.T) {
 	decoded := decodeSystemCodePage(encoded)
 	if got := string(EncodeFileName(decoded)); got != string(encoded) {
 		t.Fatalf("the system spelling changed on a round trip: %v -> %q -> %v", encoded, decoded, []byte(got))
+	}
+}
+
+func TestShortPathRefersToTheSameUnicodeDirectory(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "日本語の原稿 with spaces")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	short, err := ShortPath(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expanded, err := filepath.EvalSymlinks(short)
+	if err != nil || !strings.EqualFold(canonical, expanded) {
+		t.Fatalf("short path points elsewhere: %q -> %q (%v), expected %q", short, expanded, err, canonical)
 	}
 }

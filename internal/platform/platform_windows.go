@@ -211,3 +211,23 @@ func EncodeFileName(name string) []byte {
 	}
 	return data[:int(result)]
 }
+
+// TeX's working directory can use Windows' 8.3 spelling even when the
+// application started it with the full Unicode path.
+func ShortPath(path string) (string, error) {
+	input, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return "", err
+	}
+	convert := kernel32.NewProc("GetShortPathNameW")
+	length, _, callErr := convert.Call(uintptr(unsafe.Pointer(input)), 0, 0)
+	if length == 0 || length > 32768 {
+		return "", fmt.Errorf("get short path: %w", callErr)
+	}
+	buffer := make([]uint16, int(length)+1)
+	result, _, callErr := convert.Call(uintptr(unsafe.Pointer(input)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	if result == 0 || result >= uintptr(len(buffer)) {
+		return "", fmt.Errorf("get short path: %w", callErr)
+	}
+	return syscall.UTF16ToString(buffer[:result]), nil
+}
