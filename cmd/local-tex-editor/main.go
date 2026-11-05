@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -100,24 +99,7 @@ func run() error {
 	url := "http://" + host + "/"
 	mux := http.NewServeMux()
 	mux.Handle("/api/", application.Handler())
-	files := http.FileServer(http.FS(web.Files()))
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Host != host {
-			http.Error(w, "Unexpected Host", http.StatusForbidden)
-			return
-		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
-		if r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, ".html") {
-			w.Header().Set("Cache-Control", "no-store")
-		}
-		files.ServeHTTP(w, r)
-	}))
+	mux.Handle("/", staticFiles(host, web.Files()))
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
 	ready := map[string]any{"url": url, "token": token, "pid": os.Getpid(), "version": version}
 	data, _ := json.Marshal(ready)

@@ -291,6 +291,10 @@ test('TeX の失敗を画面に出し，実行中のコンパイルを停止す�
   const slowSource = String.raw`\documentclass[uplatex,dvipdfmx]{jsarticle}
 \begin{document}
 \typeout{LOCAL_TEX_EDITOR_LONG_COMPILE}
+\newwrite\editorreadyfile
+\immediate\openout\editorreadyfile=editor-long-compile.ready
+\immediate\write\editorreadyfile{LOCAL_TEX_EDITOR_LONG_COMPILE}
+\immediate\closeout\editorreadyfile
 \newcount\delaycounter
 \delaycounter=0
 \loop\advance\delaycounter by 1\ifnum\delaycounter<1000000000\repeat
@@ -302,9 +306,19 @@ Finished.
     new URL(response.url()).pathname === '/api/build' && response.request().method() === 'POST');
   await page.getByTestId('compile-button').click();
   const started = await (await runningResponse).json();
-  await waitUntil(() => json(session, '/api/build'), build =>
-    build?.id === started.id && build.status === 'running' && build.log.includes('LOCAL_TEX_EDITOR_LONG_COMPILE'),
-  20_000, 'The long-running TeX process did not start.');
+  // Windows TeX may buffer terminal output during a long calculation. A closed
+  // file confirms that the actual TeX child reached the loop before we stop it.
+  const markerPath = path.join(session.project, '.local-tex-editor', 'build', 'editor-long-compile.ready');
+  await waitUntil(async () => {
+    const build = await json(session, '/api/build');
+    const marker = await readFile(markerPath, 'utf8').catch(error => {
+      if (error.code === 'ENOENT') return '';
+      throw error;
+    });
+    return { build, marker };
+  }, value => value.build?.id === started.id && value.build.status === 'running' &&
+    value.marker.includes('LOCAL_TEX_EDITOR_LONG_COMPILE'),
+  20_000, 'The long-running TeX process did not reach the loop.');
   await page.getByTestId('stop-button').click();
   const stopped = await buildFinished(session, started.id);
   expect(stopped.status, stopped.log + '\n' + stopped.error).toBe('cancelled');
