@@ -53,7 +53,17 @@ func TestNativeFolderPickerClosesWhenHTTPDisconnects(t *testing.T) {
 		t.Skip("set LOCAL_TEX_EDITOR_TEST_NATIVE_PICKER=1 on an interactive Windows runner")
 	}
 	a, _ := testApp(t)
-	server := httptest.NewServer(a.Handler())
+	type observedRequest struct {
+		ctx  context.Context
+		done chan struct{}
+	}
+	observed := make(chan observedRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := observedRequest{ctx: r.Context(), done: make(chan struct{})}
+		observed <- request
+		defer close(request.done)
+		a.Handler().ServeHTTP(w, r)
+	}))
 	defer server.Close()
 	defer platform.CancelFolderPicker()
 	a.SetAddress(strings.TrimPrefix(server.URL, "http://"))
@@ -61,8 +71,9 @@ func TestNativeFolderPickerClosesWhenHTTPDisconnects(t *testing.T) {
 	defer cancel()
 	finished := make(chan error, 1)
 	go func() {
-		request, _ := http.NewRequestWithContext(requestContext, http.MethodPost, server.URL+"/api/project/pick", nil)
+		request, _ := http.NewRequestWithContext(requestContext, http.MethodPost, server.URL+"/api/project/pick", strings.NewReader("{}"))
 		request.Header.Set("X-Local-Token", testToken)
+		request.Header.Set("Content-Type", "application/json")
 		response, err := server.Client().Do(request)
 		if response != nil {
 			response.Body.Close()
@@ -79,13 +90,27 @@ func TestNativeFolderPickerClosesWhenHTTPDisconnects(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("the HTTP request did not stop")
 	}
+	request := <-observed
+	select {
+	case <-request.ctx.Done():
+		t.Log("the server request context was cancelled after the client disconnected")
+	case <-time.After(3 * time.Second):
+		t.Fatal("the server did not observe the disconnected client")
+	}
+	select {
+	case <-request.done:
+		t.Log("the folder handler returned after cancellation")
+	case <-time.After(3 * time.Second):
+		t.Fatal("the folder handler did not return after its context was cancelled")
+	}
 	waitForAppFolderWindow(t, false)
 	t.Log("disconnecting the authenticated HTTP request closed the native dialog")
 	requestContext, cancel = context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	go func() {
-		request, _ := http.NewRequestWithContext(requestContext, http.MethodPost, server.URL+"/api/project/pick", nil)
+		request, _ := http.NewRequestWithContext(requestContext, http.MethodPost, server.URL+"/api/project/pick", strings.NewReader("{}"))
 		request.Header.Set("X-Local-Token", testToken)
+		request.Header.Set("Content-Type", "application/json")
 		response, err := server.Client().Do(request)
 		if err == nil {
 			defer response.Body.Close()
