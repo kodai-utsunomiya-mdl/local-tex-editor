@@ -108,7 +108,14 @@ func (a *App) restoreCachedBuildLocked(project Project) {
 	}
 	names := []string{}
 	for _, entry := range entries {
-		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), "pdf-") && strings.HasSuffix(entry.Name(), ".json") {
+		if !strings.HasPrefix(entry.Name(), "pdf-") || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if regular, err := platform.IsRegularFile(filepath.Join(directory, entry.Name()), info); err == nil && regular {
 			names = append(names, entry.Name())
 		}
 	}
@@ -132,7 +139,13 @@ func (a *App) restoreCachedBuildLocked(project Project) {
 		a.pdfVersions[value.ID] = pdf
 		a.pdfOrder = append([]string{value.ID}, a.pdfOrder...)
 		if sync := value.SyncTeX; sync != nil && sync.ID == value.ID {
-			if info, err := os.Lstat(strings.TrimSuffix(pdf, ".pdf") + ".synctex.gz"); err == nil && info.Mode().IsRegular() {
+			syncPath := strings.TrimSuffix(pdf, ".pdf") + ".synctex.gz"
+			info, err := os.Lstat(syncPath)
+			regular := false
+			if err == nil {
+				regular, err = platform.IsRegularFile(syncPath, info)
+			}
+			if err == nil && regular {
 				sync.Root, sync.PDF = project.Root, pdf
 				valid := len(sync.Inputs) <= 50_000
 				for _, input := range sync.Inputs {
@@ -201,7 +214,11 @@ func readCacheFile(path string, limit int64) ([]byte, error) {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
+	if err != nil || info.Size() > limit {
+		return nil, errors.New("キャッシュのファイルを読めません．")
+	}
+	regular, err := platform.IsRegularFile(path, info)
+	if err != nil || !regular {
 		return nil, errors.New("キャッシュのファイルを読めません．")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
@@ -221,6 +238,13 @@ func validCachedPDF(path string) bool {
 		return false
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	if regular, err := platform.IsRegularFile(path, info); err != nil || !regular {
+		return false
+	}
 	var header [5]byte
 	_, err = io.ReadFull(file, header[:])
 	return err == nil && bytes.Equal(header[:], []byte("%PDF-"))

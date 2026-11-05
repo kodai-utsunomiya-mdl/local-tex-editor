@@ -4,11 +4,11 @@ Windows のブラウザでローカルの TeX プロジェクトを編集する�
 
 ## 共通の約束
 
-- API は JSON．失敗は適切な HTTP status と `{ "error": "説明" }`．画面は HTTP の失敗とプロセスの失敗を表示する．
+- API は JSON．PDF と画像のプレビューは各形式の bytes を返す．失敗は適切な HTTP status と `{ "error": "説明" }`．画面は HTTP の失敗とプロセスの失敗を表示する．
 - API と PDF は `X-Local-Token` ヘッダーで起動時のランダムな token を受け取る．UI は起動 URL の `#token=...` を読み，sessionStorage に置き，URL の fragment を取り除く．Host と Origin も検査する．サーバーは loopback だけに bind する．
 - プロジェクトの操作には `X-Project-Root: encodeURIComponent(root)` を付ける．別のタブでプロジェクトが変わった場合は HTTP 409 を返す．
 - パスはプロジェクトからの相対パス．絶対パス，親への移動，symlink / reparse point によるプロジェクト外へのアクセスを拒否する．プロジェクトを開く操作ではユーザーが選んだ絶対パスを受け付ける．
-- ファイルは UTF-8．既存の CRLF と UTF-8 BOM を保存時に尊重する．読めない文字コードは画面へ説明する．ファイルの SHA-256 を revision として返し，保存時の競合を HTTP 409 で通知する．
+- テキストの編集には UTF-8 を使う．既存の CRLF と UTF-8 BOM を保存時に尊重する．読めない文字コードは画面へ説明する．ファイルの SHA-256 を revision として返し，保存時の競合を HTTP 409 で通知する．
 - HTML / CSS / JS の配信には認証不要．ユーザーファイルやプロジェクトの情報は API の認証後に扱う．外部 CDN を利用しない．
 
 ## API
@@ -16,10 +16,22 @@ Windows のブラウザでローカルの TeX プロジェクトを編集する�
 ### GET /api/state
 
 ```json
-{"version":"0.1.0","platform":"windows","texBin":"C:\\texlive\\2025\\bin\\windows","latexmk":"...","project":null,"recentProjects":[],"build":null}
+{"version":"0.1.1","platform":"windows","texBin":"C:\\texlive\\2025\\bin\\windows","latexmk":"...","synctex":"...","synctexInstallCommands":[],"project":null,"recentProjects":[],"build":null}
 ```
 
-project は開いている場合 `{ "root": "絶対パス", "main": "main.tex", "mode": "project", "files": [{"path":"main.tex","size":123}] }`．mode は `project`，`pdflatex`，`uplatex`，`xelatex`，`lualatex`．project では既存の latexmkrc をそのまま読み，出力形式を上書きしない．
+synctex は利用できる実行ファイルのパス．見つからない場合は空文字列と synctexError の説明を返す．Windows で TeX Live の管理ツールと年版が確認できた場合は，設定画面に表示する PowerShell のコマンドを synctexInstallCommands へ入れる．
+
+project は開いている場合に次の形式で返す．
+
+```json
+{"root":"絶対パス","main":"main.tex","mode":"project","files":[{"path":"main.tex","size":123,"kind":"text"},{"path":"figures/chart.png","size":456,"kind":"image"}],"directories":["figures","figures/empty"]}
+```
+
+mode は `project`，`pdflatex`，`uplatex`，`xelatex`，`lualatex`．project では既存の latexmkrc をそのまま読み，出力形式を上書きしない．
+
+files は通常のファイルを一覧にし，path は `/` を使うルートからの相対パス，size は byte 数とする．kind は `text`，`image`，`pdf`，`binary`．UI は `text` を編集・草稿・TeX の補完の読込対象にする．`image` / `pdf` はプレビュー，`binary` は名前・サイズと未対応の種類である旨を表示する．
+
+directories はルートからの相対パスの配列で，空のフォルダーも含む．ルート自体は含めない．`.git`，`.local-tex-editor`，`node_modules` 等の作業用フォルダーと，symlink / junction を経由した項目は一覧から除く．Windows の OneDrive cloud placeholder は，cloud tag と通常ファイル / フォルダーの属性を確認して扱う．ファイルの読込時には Windows が必要な内容を取得する．
 
 ### POST /api/project/open
 
@@ -33,6 +45,8 @@ Windows のフォルダー選択ダイアログを開く．成功時 `{ "path": 
 
 入力 `{ "texBin": "絶対パスまたは空", "main": "main.tex", "mode": "project" }`．state を返す．texBin は TeX の実行ファイルがあるフォルダー．main / mode は開いた project 用．未指定の値は変更しない．
 
+main / mode / texBin が変わった場合は，成功済みの PDF がある build の `sourceChanged` を true にする．同じ設定の再送と空の入力では，そのフラグを現在の値のままにする．文字サイズ等の UI 設定は `/api/storage` へ保存する．
+
 ### GET /api/file?path=相対パス
 
 `{"path":"main.tex","content":"...","revision":"sha256","lineEnding":"lf"}`．読み書きはテキストの拡張子を許可リストで限定する．
@@ -40,6 +54,16 @@ Windows のフォルダー選択ダイアログを開く．成功時 `{ "path": 
 ### PUT /api/file
 
 入力 `{ "path":"main.tex", "content":"...", "revision":"読込時のsha256" }`．保存後に GET と同じ形式を返す．新規作成は revision を空文字列にし，既存なら 409．成功するまで UI の未保存状態を解除しない．同じフォルダーの一時ファイルへ書き込んで置き換える．
+
+### GET /api/asset?path=相対パス
+
+プロジェクト内の画像または PDF を返す．`X-Local-Token` と `X-Project-Root` は他のプロジェクト用 API と共通．HEAD と HTTP Range にも対応する．ファイル全体をサーバーのメモリへ読み込まず，128 MiB までのファイルを配信する．上限を超えた場合は 413．
+
+対応する拡張子は PNG / APNG，JPEG，GIF，WebP，BMP，SVG，ICO，AVIF，PDF．拡張子に対応する MIME type を明示し，先頭データも確認する．SVG は SVG namespace のルート要素を持つ XML を受け付ける．未対応の種類，HTML，形式と拡張子が合わないデータは 415．テキスト用の `/api/file` では画像や PDF の読み書きを受け付けない．
+
+画像は認証付き fetch で読み込んだ Blob を `<img>` へ渡し，PDF は PDF.js へ渡す．SVG を DOM へ挿入したり，`iframe` / `object` / `embed` で表示したりしない．[SVG 2 の image としての処理](https://www.w3.org/TR/SVG/latest/conform.html)では，script，操作，外部ファイルの参照が無効になる．API の応答にも `Content-Security-Policy: sandbox; default-src 'none'; ...` と `X-Content-Type-Options: nosniff` を付ける．
+
+応答は `Cache-Control: no-store` とし，ファイルが同じ秒内に更新された場合も現在の bytes を返す．`Last-Modified` による 304 応答は行わない．パスの移動，プロジェクト外，symlink / junction 経由，通常ファイル以外の項目は拒否する．
 
 ### POST /api/build
 

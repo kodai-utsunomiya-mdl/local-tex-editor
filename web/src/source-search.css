@@ -1,0 +1,15 @@
+.editor-host .source-search { padding: 7px 9px; font-family: inherit; }
+.source-search-row { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
+.editor-host .source-search textarea.source-search-field { flex: 1 1 140px; min-width: 40px; resize: vertical; min-height: 28px; max-height: 160px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface, white); color: inherit; font: 12px/1.5 "Cascadia Code", Consolas, "Yu Gothic UI", Meiryo, monospace; white-space: pre; overflow: auto; }
+.editor-host .source-search textarea[aria-invalid="true"] { border-color: #c65564; }
+.editor-host .source-search button { flex: 0 0 auto; min-height: 28px; padding: 3px 8px; margin: 0; font-size: 11px; }
+.editor-host .source-search button[name="close"] { position: static; font-size: 17px; border: 0; background: transparent; }
+.source-search-count { font-size: 11px; line-height: 28px; min-width: 3ch; white-space: nowrap; text-align: right; }
+.source-search-options { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 13px; margin: 5px 0; }
+.editor-host .source-search-options label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; }
+.source-search-options input { margin: 0; accent-color: var(--accent); }
+.source-search-help { font-size: 10px; color: var(--muted); margin-left: auto; }
+[data-theme="dark"] .editor-host .source-search textarea.source-search-field { background: #14212b; color: #d7e2eb; }
+[data-theme="dark"] .editor-host .source-search button { background: #233440; color: #d7e2eb; }
+[data-theme="dark"] .editor-host .source-search button[name="close"] { background: transparent; }
+@media (max-width: 600px) { .source-search-help { margin-left: 0; } .source-search-options { gap: 5px 9px; } }

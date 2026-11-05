@@ -34,6 +34,10 @@ func IsReparsePoint(path string) (bool, error) {
 	return info.Mode()&os.ModeSymlink != 0, nil
 }
 
+func IsRegularFile(_ string, info os.FileInfo) (bool, error) {
+	return info.Mode().IsRegular(), nil
+}
+
 func ReplaceFile(src, dst string) error { return os.Rename(src, dst) }
 
 func OpenBrowser(url string) error {
@@ -49,7 +53,7 @@ func OpenBrowser(url string) error {
 	return nil
 }
 
-func PickFolder() (string, error) {
+func showNativeFolderDialog(_ *folderPickRequest) (string, error) {
 	return "", errors.New("この OS ではフォルダーのパスを入力してください．")
 }
 

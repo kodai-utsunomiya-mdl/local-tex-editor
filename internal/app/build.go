@@ -378,9 +378,11 @@ func findLatexmk(texBin string) (string, string, error) {
 	}
 	if texBin != "" {
 		path := filepath.Join(texBin, name)
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			absolute, err := filepath.Abs(path)
-			return absolute, filepath.Dir(absolute), err
+		if info, err := os.Stat(path); err == nil {
+			if regular, err := platform.IsRegularFile(path, info); err == nil && regular {
+				absolute, err := filepath.Abs(path)
+				return absolute, filepath.Dir(absolute), err
+			}
 		}
 		return "", texBin, fmt.Errorf("%s が見つかりません．設定で latexmk が入っている TeX Live のフォルダーを指定してください．", path)
 	}
@@ -396,8 +398,10 @@ func findLatexmk(texBin string) (string, string, error) {
 		candidates, _ := filepath.Glob(filepath.Join(drive+`\`, "texlive", "*", "bin", "windows", name))
 		sort.Sort(sort.Reverse(sort.StringSlice(candidates)))
 		for _, candidate := range candidates {
-			if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-				return candidate, filepath.Dir(candidate), nil
+			if info, err := os.Stat(candidate); err == nil {
+				if regular, err := platform.IsRegularFile(candidate, info); err == nil && regular {
+					return candidate, filepath.Dir(candidate), nil
+				}
 			}
 		}
 	}

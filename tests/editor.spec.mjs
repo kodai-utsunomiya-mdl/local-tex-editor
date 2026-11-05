@@ -1,7 +1,7 @@
 import { test as base, expect } from '@playwright/test';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { cp, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -12,6 +12,28 @@ const fixture = path.join(import.meta.dirname, 'fixtures', 'japanese');
 const executable = path.resolve(process.env.LOCAL_TEX_EDITOR_TEST_EXE ||
   path.join(repository, 'bin', process.platform === 'win32' ? 'local-tex-editor.exe' : 'local-tex-editor'));
 const execFileAsync = promisify(execFile);
+
+function exampleFigurePDF() {
+  const content = 'BT /F1 18 Tf 30 100 Td (Figure PDF) Tj ET\n';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}endstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
 
 async function waitUntil(read, predicate, timeout, description) {
   const deadline = Date.now() + timeout;
@@ -228,12 +250,124 @@ test('起動時のエラーを無人実行でも受け取れる', async () => {
   expect(result.stderr).toContain('loopback');
 });
 
+test('改行を貼り付けて検索し，TeX のコマンドをそのまま置換する', async ({ page, session }, testInfo) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await openProject(session);
+  await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
+  await expect(page.getByTestId('editor').locator('.cm-content')).toBeVisible();
+  await setAutoSave(page, false);
+  const block = String.raw`\ifneuripslayout
+  \input{common-neurips-uplatex}
+\else
+  \input{common-uplatex}
+\fi`;
+  const replacement = String.raw`\newcommand{\test}{first}
+\textbf{second} \\ third`;
+  await replaceEditor(page, `% before\n${block}\n% middle\n${block}\n% after\n`);
+  await page.locator('#find-button').click();
+  const search = page.getByTestId('source-search-input');
+  await expect(search).toBeFocused();
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(text => navigator.clipboard.writeText(text), block.replaceAll('\n', '\r\n'));
+  await search.press('Control+V');
+  await expect(search).toHaveValue(block);
+  await expect(page.getByTestId('source-search-count')).toHaveText('2 件');
+  await search.press('Enter');
+  await expect(page.getByTestId('source-search-count')).toHaveText('1 / 2');
+  await search.press('Enter');
+  await expect(page.getByTestId('source-search-count')).toHaveText('2 / 2');
+  await search.press('Shift+Enter');
+  await expect(page.getByTestId('source-search-count')).toHaveText('1 / 2');
+  await page.getByTestId('source-replace-input').fill(replacement);
+  await page.getByTestId('source-search-replace-all').click();
+  await expect(page.getByTestId('source-search-count')).toHaveText('0 件');
+  await page.getByTestId('save-button').click();
+  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(`% before\n${replacement}\n% middle\n${replacement}\n% after\n`);
+
+  let builds = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname === '/api/build' && request.method() === 'POST') builds++; });
+  await search.fill('first');
+  await search.press('End');
+  await search.press('Control+Enter');
+  await search.pressSequentially('second');
+  await expect(search).toHaveValue('first\nsecond');
+  expect(builds).toBe(0);
+  await search.fill('[');
+  await page.getByRole('checkbox', { name: '正規表現', exact: true }).check();
+  await expect(page.getByTestId('source-search-count')).toHaveText('正規表現を確認');
+  await expect(page.getByTestId('source-search-next')).toBeDisabled();
+  await page.getByRole('checkbox', { name: '正規表現', exact: true }).uncheck();
+  await search.fill(replacement);
+  await expect(page.getByTestId('source-search-count')).toHaveText('2 件');
+  await page.screenshot({ path: testInfo.outputPath('multiline-search.png') });
+  await search.press('Escape');
+  await expect(search).not.toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('フォルダーから画像と PDF を開き，編集中の原稿へ戻る', async ({ page, session }, testInfo) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const figures = path.join(session.project, 'figures');
+  await mkdir(path.join(figures, 'empty'), { recursive: true });
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQaXjwHwAE1AKEf31AsgAAAABJRU5ErkJggg==', 'base64');
+  await writeFile(path.join(figures, '図.png'), png);
+  await writeFile(path.join(figures, 'plot.pdf'), exampleFigurePDF());
+  await writeFile(path.join(figures, 'shape.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160"><rect width="320" height="160" fill="#137b72"/><text x="30" y="85" fill="white" font-size="28">Figure</text></svg>');
+  const metadata = await openProject(session);
+  expect(metadata.project.directories).toEqual(expect.arrayContaining(['figures', 'figures/empty']));
+  expect(metadata.project.files.find(file => file.path === 'figures/図.png')?.kind).toBe('image');
+  expect(metadata.project.files.find(file => file.path === 'figures/plot.pdf')?.kind).toBe('pdf');
+  await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
+  await expect(page.getByTestId('editor').locator('.cm-content')).toBeVisible();
+  await setAutoSave(page, false);
+  const source = '% 図を確認する前の草稿\n\\newcommand{\\example}{draft}\n';
+  await replaceEditor(page, source);
+  await page.keyboard.press('Control+Home');
+  await page.keyboard.press('ArrowDown');
+  const line = await page.getByTestId('editor').getAttribute('data-line');
+  const folder = page.locator('[data-testid="tree-folder"][data-path="figures"]');
+  await folder.locator(':scope > summary').click();
+  await expect(page.locator('[data-testid="tree-folder"][data-path="figures/empty"]')).toBeVisible();
+  await page.getByTestId('file-figures/図.png').click();
+  const assetImage = page.locator('#asset-preview img');
+  await expect(assetImage).toBeVisible();
+  await expect.poll(() => assetImage.evaluate(image => image.complete && image.naturalWidth)).toBe(1);
+  await expect(page.getByTestId('save-button')).toBeDisabled();
+  await page.getByTestId('file-figures/shape.svg').click();
+  await expect.poll(() => assetImage.evaluate(image => image.complete && image.naturalWidth)).toBe(320);
+  await page.screenshot({ path: testInfo.outputPath('image-preview.png') });
+  await page.getByTestId('file-figures/plot.pdf').click();
+  await expect(page.locator('#asset-preview canvas').first()).toBeVisible();
+  await expect.poll(() => page.locator('#asset-preview canvas').first().evaluate(canvas => canvas.width)).toBeGreaterThan(100);
+  await page.locator('#editor-tabs [data-path="main.tex"]').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  await expect(page.getByTestId('editor')).toHaveAttribute('data-line', line);
+  await expect(page.getByTestId('editor').locator('.cm-content')).toContainText('図を確認する前の草稿');
+  await expect(page.getByTestId('save-button')).toBeEnabled();
+  await page.getByTestId('save-button').click();
+  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(source);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const dimensions = await page.evaluate(() => ({
+    toolbar: document.querySelector('.app-header').getBoundingClientRect().height,
+    editorTop: document.querySelector('#editor').getBoundingClientRect().top,
+    pdfTop: document.querySelector('#pdf-scroll').getBoundingClientRect().top,
+  }));
+  expect(dimensions.toolbar).toBeLessThanOrEqual(48);
+  expect(dimensions.editorTop).toBeLessThanOrEqual(100);
+  expect(dimensions.pdfTop).toBeLessThanOrEqual(100);
+  await page.screenshot({ path: testInfo.outputPath('compact-editor.png') });
+  expect(errors).toEqual([]);
+});
+
 test('日本語の原稿を編集し，参考文献と PDF を更新する', async ({ page, session }, testInfo) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
   if (!await page.getByTestId('project-path').isVisible()) {
-    await page.getByRole('button', { name: 'プロジェクトフォルダーを開く', exact: false }).click();
+    await page.locator('#welcome-open').click();
   }
   await page.getByTestId('project-path').fill(session.project);
   await page.getByTestId('open-project').click();
@@ -328,6 +462,71 @@ test('日本語の原稿を編集し，参考文献と PDF を更新する', asy
   await page.getByTestId('pdf-next').click();
   await expect(page.getByTestId('pdf-page')).toHaveValue('2');
   await expect(canvas).toHaveAttribute('data-page', '2');
+
+  const sourceBeforeAppearance = await readFile(path.join(session.project, 'main.tex'), 'utf8');
+  const pdfWidthBeforeAppearance = await secondPage.evaluate(element => element.getBoundingClientRect().width);
+  const browserScale = await page.evaluate(() => window.visualViewport.scale);
+  await page.getByTestId('settings-button').click();
+  await page.getByTestId('editor-font-size').fill('16');
+  await page.locator('#save-settings').click();
+  await expect(page.getByTestId('editor-font-size')).not.toBeVisible();
+  const editorSize = () => page.getByTestId('editor').locator('.cm-scroller').evaluate(element => parseFloat(getComputedStyle(element).fontSize));
+  await expect.poll(editorSize).toBe(16);
+  await expect(page.locator('#pdf-note')).not.toBeVisible();
+  expect((await json(session, '/api/build')).sourceChanged).toBe(false);
+  await editor.hover();
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -180);
+  await page.keyboard.up('Control');
+  await expect.poll(editorSize).toBeGreaterThan(16);
+  const enlargedEditorSize = await editorSize();
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, 90);
+  await page.keyboard.up('Control');
+  await expect.poll(editorSize).toBeLessThan(enlargedEditorSize);
+
+  const beforePinch = await editorSize();
+  const editorBounds = await page.getByTestId('editor').boundingBox();
+  const centerX = Math.round(editorBounds.x + editorBounds.width / 2);
+  const centerY = Math.round(editorBounds.y + editorBounds.height / 2);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+  const points = distance => [{ x: centerX - distance, y: centerY, id: 1 }, { x: centerX + distance, y: centerY, id: 2 }];
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points(30) });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(45) });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect.poll(editorSize).toBeGreaterThan(beforePinch);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await cdp.detach();
+  await expect(page.locator('#pdf-note')).not.toBeVisible();
+  expect((await json(session, '/api/build')).sourceChanged).toBe(false);
+  expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(sourceBeforeAppearance);
+  expect(await secondPage.evaluate(element => element.getBoundingClientRect().width)).toBeCloseTo(pdfWidthBeforeAppearance, 0);
+  expect(await page.evaluate(() => window.visualViewport.scale)).toBe(browserScale);
+  await expect(page.getByTestId('pdf-page')).toHaveValue('2');
+  // Use the usual writing size for the remaining editing and screenshots.
+  await page.getByTestId('settings-button').click();
+  await page.getByTestId('editor-font-size').fill('14');
+  await page.locator('#save-settings').click();
+  await expect.poll(editorSize).toBe(14);
+
+  let toolMissing = true;
+  await page.route('**/api/state', async route => {
+    const response = await route.fetch();
+    const metadata = await response.json();
+    if (toolMissing) {
+      metadata.synctex = '';
+      metadata.synctexError = 'synctex が見つかりません．';
+      metadata.synctexInstallCommands = ['tlmgr install --reinstall synctex synctex.windows'];
+    }
+    await route.fulfill({ response, json: metadata });
+  });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(page.getByTestId('synctex-forward')).toBeDisabled();
+  toolMissing = false;
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(page.getByTestId('synctex-forward')).toBeEnabled();
+  await page.unroute('**/api/state');
 
   await editor.click();
   await page.keyboard.press('Control+Home');

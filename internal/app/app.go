@@ -33,7 +33,7 @@ type Options struct {
 }
 
 type App struct {
-	uiMu sync.Mutex
+	uiMu            sync.Mutex
 	mu              sync.Mutex
 	cacheMu         sync.RWMutex
 	options         Options
@@ -42,7 +42,6 @@ type App struct {
 	build           *buildRun
 	address         string
 	closed          bool
-	picking         bool
 	workers         sync.WaitGroup
 	lastPDF         string
 	lastPDFID       string
@@ -53,14 +52,17 @@ type App struct {
 }
 
 type State struct {
-	Version        string   `json:"version"`
-	Platform       string   `json:"platform"`
-	TexBin         string   `json:"texBin"`
-	Latexmk        string   `json:"latexmk"`
-	ToolError      string   `json:"toolError,omitempty"`
-	Project        *Project `json:"project"`
-	RecentProjects []string `json:"recentProjects"`
-	Build          *Build   `json:"build"`
+	Version                string   `json:"version"`
+	Platform               string   `json:"platform"`
+	TexBin                 string   `json:"texBin"`
+	Latexmk                string   `json:"latexmk"`
+	ToolError              string   `json:"toolError,omitempty"`
+	Synctex                string   `json:"synctex"`
+	SynctexError           string   `json:"synctexError,omitempty"`
+	SynctexInstallCommands []string `json:"synctexInstallCommands"`
+	Project                *Project `json:"project"`
+	RecentProjects         []string `json:"recentProjects"`
+	Build                  *Build   `json:"build"`
 }
 
 type apiError struct {
@@ -124,6 +126,7 @@ func (a *App) Close() error {
 	a.mu.Lock()
 	a.closed = true
 	a.mu.Unlock()
+	platform.CancelFolderPicker()
 	_ = a.stopBuild()
 	done := make(chan struct{})
 	go func() { a.workers.Wait(); close(done) }()
@@ -143,6 +146,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/api/settings", a.settingsHandler)
 	mux.HandleFunc("/api/storage", a.storageHandler)
 	mux.HandleFunc("/api/file", a.fileHandler)
+	mux.HandleFunc("/api/asset", a.assetHandler)
 	mux.HandleFunc("/api/build", a.buildHandler)
 	mux.HandleFunc("/api/build/stop", a.stopHandler)
 	mux.HandleFunc("/api/pdf", a.pdfHandler)
@@ -238,8 +242,9 @@ func writeError(w http.ResponseWriter, err error) {
 
 func (a *App) stateLocked(refresh bool) State {
 	if refresh && a.project != nil {
-		if files, err := listProjectFiles(a.project.Root); err == nil {
+		if files, directories, err := listProjectEntries(a.project.Root); err == nil {
 			a.project.Files = files
+			a.project.Directories = directories
 		}
 	}
 	result := State{
@@ -250,10 +255,12 @@ func (a *App) stateLocked(refresh bool) State {
 	if a.project != nil {
 		copy := *a.project
 		copy.Files = append([]ProjectFile{}, copy.Files...)
+		copy.Directories = append([]string{}, copy.Directories...)
 		result.Project = &copy
 	}
 	tool, bin, err := findLatexmk(a.config.TexBin)
 	result.Latexmk = tool
+	result.Synctex, result.SynctexError, result.SynctexInstallCommands = synctexStatus(bin)
 	if a.config.TexBin == "" && bin != "" {
 		result.TexBin = bin
 	}
@@ -301,29 +308,6 @@ func (a *App) openHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, state)
-}
-
-func (a *App) pickHandler(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodPost) {
-		return
-	}
-	a.mu.Lock()
-	if a.picking {
-		a.mu.Unlock()
-		writeError(w, fail(http.StatusConflict, "フォルダーの選択画面を先に閉じてください．"))
-		return
-	}
-	a.picking = true
-	a.mu.Unlock()
-	path, err := platform.PickFolder()
-	a.mu.Lock()
-	a.picking = false
-	a.mu.Unlock()
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
 func (a *App) settingsHandler(w http.ResponseWriter, r *http.Request) {
@@ -384,8 +368,9 @@ func (a *App) fileHandler(w http.ResponseWriter, r *http.Request) {
 			if a.build != nil && document.Revision != input.Revision {
 				a.build.result.SourceChanged = true
 			}
-			if files, listErr := listProjectFiles(a.project.Root); listErr == nil {
+			if files, directories, listErr := listProjectEntries(a.project.Root); listErr == nil {
 				a.project.Files = files
+				a.project.Directories = directories
 			}
 		}
 	}

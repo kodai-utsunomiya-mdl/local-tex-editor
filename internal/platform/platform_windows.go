@@ -53,18 +53,6 @@ func StopProcess(process *os.Process) error {
 	return nil
 }
 
-func IsReparsePoint(path string) (bool, error) {
-	p, err := syscall.UTF16PtrFromString(path)
-	if err != nil {
-		return false, err
-	}
-	attrs, err := syscall.GetFileAttributes(p)
-	if err != nil {
-		return false, err
-	}
-	return attrs&0x400 != 0, nil
-}
-
 func ReplaceFile(src, dst string) error {
 	s, err := syscall.UTF16PtrFromString(src)
 	if err != nil {
@@ -99,47 +87,6 @@ func OpenBrowser(url string) error {
 		return fmt.Errorf("could not open the browser (Windows code %d)", result)
 	}
 	return nil
-}
-
-type browseInfo struct {
-	owner       uintptr
-	root        uintptr
-	displayName *uint16
-	title       *uint16
-	flags       uint32
-	callback    uintptr
-	param       uintptr
-	image       int32
-}
-
-func PickFolder() (string, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	hr, _, _ := ole32.NewProc("CoInitializeEx").Call(0, 2)
-	if int32(hr) < 0 {
-		return "", fmt.Errorf("folder dialog could not start (HRESULT 0x%x)", hr)
-	}
-	defer ole32.NewProc("CoUninitialize").Call()
-	title, _ := syscall.UTF16PtrFromString("TeX のプロジェクトフォルダーを選択")
-	name := make([]uint16, 260)
-	info := browseInfo{displayName: &name[0], title: title, flags: 0x1 | 0x40 | 0x10}
-	pidl, _, _ := shell32.NewProc("SHBrowseForFolderW").Call(uintptr(unsafe.Pointer(&info)))
-	if pidl == 0 {
-		return "", nil
-	}
-	defer ole32.NewProc("CoTaskMemFree").Call(pidl)
-	path := make([]uint16, 32768)
-	proc := shell32.NewProc("SHGetPathFromIDListEx")
-	var ok uintptr
-	if proc.Find() == nil {
-		ok, _, _ = proc.Call(pidl, uintptr(unsafe.Pointer(&path[0])), uintptr(len(path)), 0)
-	} else {
-		ok, _, _ = shell32.NewProc("SHGetPathFromIDListW").Call(pidl, uintptr(unsafe.Pointer(&path[0])))
-	}
-	if ok == 0 {
-		return "", errors.New("the selected folder is not a local file system folder")
-	}
-	return syscall.UTF16ToString(path), nil
 }
 
 func ShowError(message string) {

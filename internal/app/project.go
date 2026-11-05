@@ -23,13 +23,15 @@ import (
 type ProjectFile struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
+	Kind string `json:"kind"`
 }
 
 type Project struct {
-	Root  string        `json:"root"`
-	Main  string        `json:"main"`
-	Mode  string        `json:"mode"`
-	Files []ProjectFile `json:"files"`
+	Root        string        `json:"root"`
+	Main        string        `json:"main"`
+	Mode        string        `json:"mode"`
+	Files       []ProjectFile `json:"files"`
+	Directories []string      `json:"directories"`
 }
 
 type FileDocument struct {
@@ -110,7 +112,7 @@ func (a *App) openProjectLocked(rawPath string) error {
 	if !info.IsDir() {
 		return fail(http.StatusBadRequest, "ファイルが選ばれています．原稿を含むフォルダーを選んでください．")
 	}
-	files, err := listProjectFiles(root)
+	files, directories, err := listProjectEntries(root)
 	if err != nil {
 		return err
 	}
@@ -118,7 +120,12 @@ func (a *App) openProjectLocked(rawPath string) error {
 	if !exists {
 		settings.Mode = "pdflatex"
 		for _, name := range []string{"latexmkrc", ".latexmkrc"} {
-			if info, err := os.Stat(filepath.Join(root, name)); err == nil && info.Mode().IsRegular() {
+			path := filepath.Join(root, name)
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			if regular, err := platform.IsRegularFile(path, info); err == nil && regular {
 				settings.Mode = "project"
 			}
 		}
@@ -141,7 +148,7 @@ func (a *App) openProjectLocked(rawPath string) error {
 		return fmt.Errorf("プロジェクトの設定を保存できません: %w", err)
 	}
 	a.config = config
-	a.project = &Project{Root: root, Main: settings.Main, Mode: settings.Mode, Files: files}
+	a.project = &Project{Root: root, Main: settings.Main, Mode: settings.Mode, Files: files, Directories: directories}
 	a.build = nil
 	a.lastPDF, a.lastPDFID = "", ""
 	a.pdfVersions = make(map[string]string)
@@ -178,7 +185,15 @@ func (a *App) updateSettingsLocked(texBin, main, mode *string) error {
 			if !strings.EqualFold(filepath.Ext(clean), ".tex") {
 				return fail(http.StatusBadRequest, "メインの文書には .tex ファイルを選んでください．")
 			}
-			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+			info, err := os.Stat(path)
+			if err != nil {
+				return err
+			}
+			regular, err := platform.IsRegularFile(path, info)
+			if err != nil {
+				return err
+			}
+			if !regular {
 				return fail(http.StatusBadRequest, "選択したメインの文書を開けません．")
 			}
 			project.Main = clean
@@ -194,11 +209,15 @@ func (a *App) updateSettingsLocked(texBin, main, mode *string) error {
 	if err := a.saveConfig(config); err != nil {
 		return fmt.Errorf("設定を保存できません: %w", err)
 	}
+	compilationChanged := !samePath(config.TexBin, a.config.TexBin)
+	if a.project != nil {
+		compilationChanged = compilationChanged || !samePath(project.Main, a.project.Main) || project.Mode != a.project.Mode
+	}
 	a.config = config
 	if a.project != nil {
 		a.project = &project
 	}
-	if a.build != nil {
+	if a.build != nil && compilationChanged {
 		a.build.result.SourceChanged = true
 	}
 	return nil
@@ -279,7 +298,13 @@ func excludedDirectory(name string) bool {
 }
 
 func listProjectFiles(root string) ([]ProjectFile, error) {
+	files, _, err := listProjectEntries(root)
+	return files, err
+}
+
+func listProjectEntries(root string) ([]ProjectFile, []string, error) {
 	files := []ProjectFile{}
+	directories := []string{}
 	visited := 0
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -305,28 +330,44 @@ func listProjectFiles(root string) ([]ProjectFile, error) {
 			}
 			return nil
 		}
-		if entry.IsDir() || !entry.Type().IsRegular() || !isTextFile(path) {
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if clean, err := cleanRelative(relative); err != nil || clean != relative {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			directories = append(directories, relative)
 			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(root, path)
+		regular, err := platform.IsRegularFile(path, info)
 		if err != nil {
 			return err
 		}
-		files = append(files, ProjectFile{Path: filepath.ToSlash(relative), Size: info.Size()})
+		if !regular {
+			return nil
+		}
+		files = append(files, ProjectFile{Path: relative, Size: info.Size(), Kind: projectFileKind(relative)})
 		if len(files) > 10000 {
-			return fail(http.StatusBadRequest, "テキストファイルが多すぎます．原稿のフォルダーを直接選んでください．")
+			return fail(http.StatusBadRequest, "ファイルが多すぎます．原稿のフォルダーを直接選んでください．")
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	return files, nil
+	sort.Strings(directories)
+	return files, directories, nil
 }
 
 func cleanRelative(raw string) (string, error) {
@@ -393,8 +434,14 @@ func safePath(root, relative string, allowMissing bool) (string, error) {
 		if index < len(parts)-1 && !info.IsDir() {
 			return "", fail(http.StatusBadRequest, "途中のパスがフォルダーではありません．")
 		}
-		if index == len(parts)-1 && !info.Mode().IsRegular() {
-			return "", fail(http.StatusBadRequest, "通常のファイルを選んでください．")
+		if index == len(parts)-1 {
+			regular, err := platform.IsRegularFile(current, info)
+			if err != nil {
+				return "", err
+			}
+			if !regular {
+				return "", fail(http.StatusBadRequest, "通常のファイルを選んでください．")
+			}
 		}
 	}
 	return current, nil
@@ -410,7 +457,11 @@ func readBytes(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	regular, err := platform.IsRegularFile(path, info)
+	if err != nil {
+		return nil, err
+	}
+	if !regular {
 		return nil, fail(http.StatusBadRequest, "通常のファイルを選んでください．")
 	}
 	if info.Size() > maxTextSize {

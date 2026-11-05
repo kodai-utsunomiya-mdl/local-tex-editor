@@ -10,25 +10,32 @@
   <link rel="stylesheet" href="/pdf_viewer.css">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/pdf-search.css">
+  <link rel="stylesheet" href="/source-search.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
   <div class="app-shell" id="app-shell">
-    <header class="app-header">
-      <div class="brand" aria-label="Local TeX Editor">
-        <span class="brand-mark" aria-hidden="true">T<span>E</span>X</span>
-        <span class="brand-name">Local TeX Editor</span>
-      </div>
-      <div class="header-divider" aria-hidden="true"></div>
+    <header class="app-header" data-testid="app-toolbar">
+      <button type="button" id="sidebar-toggle" class="icon-button sidebar-toggle" aria-label="ファイル一覧の表示を切り替える" title="ファイル一覧" aria-expanded="true">☰</button>
+      <div class="brand" aria-label="Local TeX Editor" title="Local TeX Editor"><span class="brand-mark" aria-hidden="true">T<span>E</span>X</span></div>
       <div class="project-heading">
         <strong id="project-name">プロジェクトを開く</strong>
-        <span id="connection-status" class="connection-status" role="status">接続しています…</span>
       </div>
+      <div class="compile-bar" id="compile-bar">
+        <div class="compile-actions">
+          <button type="button" id="compile-button" data-testid="compile-button" class="button button-primary" title="保存してコンパイル (Ctrl+Enter)" disabled><span id="compile-icon" class="compile-icon" aria-hidden="true">▶</span><span id="compile-label">コンパイル</span></button>
+          <button type="button" id="stop-button" data-testid="stop-button" class="button button-stop" disabled hidden>■ 停止</button>
+        </div>
+        <button type="button" id="main-document" class="main-document" title="メイン文書とコンパイラーの設定を開く" disabled><span id="main-document-label">メイン文書を選択</span><span aria-hidden="true">⌄</span></button>
+      </div>
+      <span class="toolbar-spacer"></span>
+      <div class="mobile-view-switch" aria-label="作業画面"><button type="button" id="show-editor" class="selected" aria-pressed="true">編集</button><button type="button" id="show-preview" aria-pressed="false">PDF</button></div>
+      <button type="button" id="log-toggle" class="button button-subtle" aria-expanded="false">ログ <span id="log-indicator" class="log-indicator" hidden></span></button>
       <div class="header-actions">
-        <button type="button" id="theme-toggle" data-testid="theme-toggle" class="button button-subtle theme-toggle" aria-pressed="false" aria-label="ダークテーマに切り替える" title="ライト／ダークを切り替える"><span id="theme-icon" aria-hidden="true">◐</span><span id="theme-label">ライト</span></button>
-        <button type="button" id="show-project" class="button button-subtle" title="別のプロジェクトを開く">フォルダーを開く</button>
-        <button type="button" id="settings-button" data-testid="settings-button" class="button button-subtle" title="TeX Live とメイン文書の設定">設定</button>
-        <button type="button" id="shutdown-button" class="button button-subtle" title="ローカルのアプリを終了する">終了</button>
+        <button type="button" id="show-project" class="button button-subtle" title="プロジェクトフォルダーを開く" aria-label="プロジェクトフォルダーを開く"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5h6l2 2h10v3M3 7h7l2 3h10l-3 10H2V7Z"/></svg><span class="header-button-label">開く</span></button>
+        <button type="button" id="settings-button" data-testid="settings-button" class="button button-subtle" title="編集とコンパイルの設定" aria-label="設定"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-1 3-3 1-2 4 2 3v4l4 2 3-1 3 1 4-2v-4l2-3-2-4-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg><span class="header-button-label">設定</span></button>
+        <button type="button" id="theme-toggle" data-testid="theme-toggle" class="icon-button theme-toggle" aria-pressed="false" aria-label="ダークテーマに切り替える" title="ライト／ダークを切り替える"><span id="theme-icon" aria-hidden="true">◐</span><span id="theme-label" class="sr-only">ライト</span></button>
+        <button type="button" id="shutdown-button" class="icon-button" title="アプリを終了する" aria-label="アプリを終了する"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v10M6 5a9 9 0 1 0 12 0"/></svg></button>
       </div>
     </header>
 
@@ -41,35 +48,10 @@
 
     <div id="recovery-banner" class="recovery-banner" role="status" hidden><span id="recovery-summary"></span><button type="button" id="review-drafts" data-testid="review-drafts" class="button button-small">草稿を確認</button><button type="button" id="dismiss-recovery" class="icon-button" aria-label="草稿の案内を閉じる">×</button></div>
 
-    <div class="compile-bar" id="compile-bar">
-      <button type="button" id="sidebar-toggle" class="icon-button sidebar-toggle" aria-label="ファイル一覧の表示を切り替える" aria-expanded="true">☰</button>
-      <div class="compile-actions">
-        <button type="button" id="compile-button" data-testid="compile-button" class="button button-primary" disabled>
-          <span id="compile-icon" class="compile-icon" aria-hidden="true">▶</span>
-          <span id="compile-label">コンパイル</span>
-          <kbd class="button-shortcut">Ctrl ↵</kbd>
-        </button>
-        <button type="button" id="stop-button" data-testid="stop-button" class="button button-stop" disabled hidden>■ 停止</button>
-      </div>
-      <button type="button" id="main-document" class="main-document" title="メイン文書とコンパイラーの設定を開く" disabled><span id="main-document-label">メイン文書を選択</span><span aria-hidden="true">⌄</span></button>
-      <div class="build-summary">
-        <span id="build-status" data-testid="build-status" class="build-status" role="status" data-status="idle">コンパイル前</span>
-        <span id="build-elapsed" class="muted"></span>
-      </div>
-      <div class="mobile-view-switch" aria-label="作業画面">
-        <button type="button" id="show-editor" class="selected" aria-pressed="true">編集</button>
-        <button type="button" id="show-preview" aria-pressed="false">PDF</button>
-      </div>
-      <button type="button" id="log-toggle" class="button button-subtle" aria-expanded="false">ログ <span id="log-indicator" class="log-indicator" hidden></span></button>
-    </div>
-
     <main id="welcome" class="welcome">
       <div class="welcome-card">
-        <div class="welcome-mark" aria-hidden="true">T<span>E</span>X</div>
-        <p class="eyebrow">YOUR WORDS, YOUR COMPUTER</p>
-        <h1>原稿を開いて，執筆を始める</h1>
-        <p class="welcome-description">ブラウザで編集し，PC にある TeX Live でコンパイルします．<br>原稿と PDF は，この PC に保存されます．</p>
-        <button type="button" id="welcome-open" class="button button-primary button-large">プロジェクトフォルダーを開く <span aria-hidden="true">→</span></button>
+        <h1>プロジェクト</h1>
+        <button type="button" id="welcome-open" class="button button-primary">プロジェクトフォルダーを開く</button>
         <p class="welcome-note"><code>.tex</code> と <code>.bib</code>，画像などが入ったフォルダーを選択してください．</p>
         <div id="welcome-recent" class="welcome-recent" hidden>
           <h2>最近開いたプロジェクト</h2>
@@ -80,14 +62,13 @@
 
     <main id="workbench" class="workbench" hidden>
       <aside class="file-pane" id="file-pane" aria-label="プロジェクトのファイル">
-        <div class="pane-title file-title">
-          <h2>ファイル <span id="file-count" class="count-badge">0</span></h2>
+        <div class="sidebar-heading">
+          <div class="sidebar-tabs" role="tablist" aria-label="ファイルとアウトライン"><button type="button" id="files-tab" data-testid="files-tab" role="tab" aria-selected="true" class="selected">ファイル <span id="file-count" class="count-badge">0</span></button><button type="button" id="outline-tab" data-testid="outline-tab" role="tab" aria-selected="false">アウトライン</button></div>
           <div class="title-actions">
             <button type="button" id="new-file" class="icon-button" aria-label="ファイルを追加" title="ファイルを追加">＋</button>
             <button type="button" id="refresh-files" class="icon-button" aria-label="ファイル一覧を更新" title="ファイル一覧を更新">↻</button>
           </div>
         </div>
-        <div class="sidebar-tabs" role="tablist" aria-label="ファイルとアウトライン"><button type="button" id="files-tab" data-testid="files-tab" role="tab" aria-selected="true" class="selected">ファイル</button><button type="button" id="outline-tab" data-testid="outline-tab" role="tab" aria-selected="false">アウトライン</button></div>
         <div class="file-filter-wrap"><input id="file-filter" type="search" placeholder="ファイルを検索" aria-label="ファイルを検索" autocomplete="off" spellcheck="false"></div>
         <nav id="file-tree" class="file-tree" aria-label="ファイル一覧"></nav>
         <nav id="outline-tree" data-testid="outline-tree" class="outline-tree" aria-label="原稿のアウトライン" hidden></nav>
@@ -95,43 +76,53 @@
       </aside>
 
       <section class="editor-pane" id="editor-pane" aria-label="原稿を編集">
-        <div class="pane-title editor-title">
-          <div class="editor-heading"><h2 id="active-filename">原稿</h2><span id="save-status" class="save-status">保存済み</span></div>
+        <div class="editor-toolbar">
+          <h2 id="active-filename" class="sr-only">原稿</h2>
+          <div id="editor-tabs" class="editor-tabs" role="tablist" aria-label="開いているファイル"></div>
           <div class="title-actions">
-            <button type="button" id="synctex-forward" data-testid="synctex-forward" class="button button-subtle button-small" title="カーソル位置を PDF で表示 (Ctrl+クリックでも移動)" disabled>PDF の位置へ ↗</button>
-            <button type="button" id="find-button" class="button button-subtle button-small" title="検索・置換 (Ctrl+F)" disabled>検索</button>
-            <button type="button" id="save-button" data-testid="save-button" class="button button-small" title="現在のファイルを保存 (Ctrl+S)" disabled>保存 <kbd>Ctrl S</kbd></button>
+            <button type="button" id="synctex-forward" data-testid="synctex-forward" class="icon-button" title="カーソル位置を PDF で表示 (Ctrl+クリックでも移動)" aria-label="PDF の位置へ移動" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7m0-7L10 14M20 14v6H4V4h6"/></svg></button>
+            <button type="button" id="find-button" class="icon-button" title="検索・置換 (Ctrl+F)" aria-label="原稿を検索・置換" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg></button>
+            <button type="button" id="save-button" data-testid="save-button" class="icon-button" title="現在のファイルを保存 (Ctrl+S)" aria-label="現在のファイルを保存" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h15l3 3v15H3ZM7 3v6h10V3M7 21v-8h10v8"/></svg></button>
           </div>
         </div>
-        <div id="editor-tabs" class="editor-tabs" role="tablist" aria-label="開いているファイル"></div>
         <div id="conflict-banner" class="conflict-banner" hidden><span>ディスクの内容が変更されました．編集中の内容を確認して保存してください．</span><button type="button" id="review-conflict" class="button button-small">内容を確認</button></div>
         <div id="editor-empty" class="editor-empty"><span class="empty-file-icon" aria-hidden="true">{ }</span><p>左側の一覧からファイルを開いてください．</p></div>
         <div id="editor" class="editor-host" data-testid="editor" hidden></div>
+        <section id="asset-preview" class="asset-preview" data-testid="asset-preview" aria-label="選択したファイルのプレビュー" hidden>
+          <div class="asset-toolbar">
+            <span id="asset-info" class="asset-info"></span>
+            <div id="asset-page-controls" class="asset-page-controls" hidden><button type="button" id="asset-prev" class="icon-button" aria-label="画像 PDF の前のページ">‹</button><label class="page-control"><input id="asset-page" type="number" value="1" min="1" aria-label="画像 PDF のページ番号"><span>/</span><span id="asset-pages"></span></label><button type="button" id="asset-next" class="icon-button" aria-label="画像 PDF の次のページ">›</button></div>
+            <span class="toolbar-spacer"></span>
+            <button type="button" id="asset-zoom-out" class="icon-button" aria-label="選択した画像を縮小" title="縮小">−</button>
+            <select id="asset-zoom" aria-label="画像の倍率"><option value="page-fit">全体を表示</option><option value="page-width">幅に合わせる</option><option value="1">100%</option><option data-custom-zoom value="custom" hidden></option></select>
+            <button type="button" id="asset-zoom-in" class="icon-button" aria-label="選択した画像を拡大" title="拡大">＋</button>
+            <button type="button" id="asset-reload" class="icon-button" aria-label="ファイルを読み直す" title="ファイルを読み直す">↻</button>
+          </div>
+          <div class="asset-frame"><div id="asset-scroll" class="asset-scroll" tabindex="0"><div id="asset-image-stage" class="asset-image-stage" hidden><img id="asset-image" data-testid="asset-image" alt=""></div><div id="asset-pdf-stage" class="pdfViewer" hidden></div></div><div id="asset-message" class="asset-message" role="status"></div></div>
+        </section>
       </section>
 
       <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" aria-label="編集画面と PDF の幅を変更" tabindex="0"></div>
 
       <section class="pdf-pane" id="pdf-pane" aria-label="PDF のプレビュー">
-        <div class="pane-title">
-          <div class="preview-heading"><h2>プレビュー</h2><span id="pdf-state" class="pdf-state"></span></div>
-          <button type="button" id="download-pdf" class="button button-subtle button-small" title="PDF をダウンロード" disabled>PDF を保存 ↓</button>
-        </div>
         <div class="pdf-toolbar">
           <button type="button" id="pdf-prev" data-testid="pdf-prev" class="icon-button" aria-label="前のページ" disabled>‹</button>
           <label class="page-control"><input id="pdf-page" data-testid="pdf-page" type="number" min="1" value="1" aria-label="PDF のページ番号" disabled><span aria-hidden="true">/</span><span id="pdf-pages">—</span></label>
           <button type="button" id="pdf-next" data-testid="pdf-next" class="icon-button" aria-label="次のページ" disabled>›</button>
+          <span id="pdf-state" class="pdf-state"></span>
           <span class="toolbar-spacer"></span>
           <button type="button" id="pdf-zoom-out" data-testid="pdf-zoom-out" class="icon-button zoom-button" aria-label="PDF を縮小" title="縮小" disabled>−</button>
           <label class="zoom-control"><span class="sr-only">PDF の倍率</span><select id="pdf-zoom" data-testid="pdf-zoom" aria-label="PDF の倍率" disabled><option value="page-width">幅に合わせる</option><option value="page-fit">ページに合わせる</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option><option data-custom-zoom value="custom" hidden></option></select></label>
           <button type="button" id="pdf-zoom-in" data-testid="pdf-zoom-in" class="icon-button zoom-button" aria-label="PDF を拡大" title="拡大" disabled>＋</button>
+          <span class="toolbar-divider" aria-hidden="true"></span>
+          <button type="button" id="download-pdf" class="icon-button" title="コンパイルした PDF を保存" aria-label="PDF を保存" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></button>
         </div>
         <div id="pdf-note" class="pdf-note" hidden></div>
         <div class="pdf-frame">
           <div id="pdf-empty" class="pdf-empty"><div class="paper-placeholder" aria-hidden="true"><i></i><i></i><i></i><i></i></div><h3>PDF をここに表示します</h3><p>原稿を保存し，コンパイルしてください．</p></div>
-          <div id="pdf-scroll" data-testid="pdf-scroll" class="pdf-scroll" tabindex="0" aria-label="PDF を表示"><div id="pdf-stage" class="pdfViewer" hidden></div></div>
+          <div id="pdf-scroll" data-testid="pdf-scroll" class="pdf-scroll" tabindex="0" aria-label="PDF を表示" title="ダブルクリックで対応する原稿へ移動 · Ctrl + ホイールで拡大・縮小"><div id="pdf-stage" class="pdfViewer" hidden></div></div>
         </div>
         <div id="pdf-loading" class="pdf-loading" role="status" hidden><span class="spinner" aria-hidden="true"></span><span>PDF を表示しています…</span></div>
-        <div class="pdf-help">ダブルクリックで原稿へ · Ctrl + ホイールで拡大・縮小</div>
       </section>
 
       <section id="log-panel" class="log-panel" aria-label="コンパイルのログ" hidden>
@@ -141,15 +132,16 @@
       </section>
     </main>
 
-    <footer class="status-bar"><span id="cursor-status" data-testid="cursor-status"></span><span id="document-encoding"></span><span id="autosave-status"></span><span class="toolbar-spacer"></span><span id="draft-status" data-testid="draft-status"></span><span id="app-version"></span><span class="footer-local"><span class="local-dot" aria-hidden="true"></span>この PC で動作</span></footer>
+    <footer class="status-bar"><span id="cursor-status" data-testid="cursor-status"></span><span id="document-encoding"></span><span id="save-status" class="save-status"></span><span id="autosave-status"></span><span class="toolbar-spacer"></span><div class="build-summary"><span id="build-status" data-testid="build-status" class="build-status" role="status" data-status="idle">コンパイル前</span><span id="build-elapsed" class="muted"></span></div><span id="draft-status" data-testid="draft-status"></span><span id="connection-status" class="connection-status" role="status">接続しています…</span><span id="app-version"></span></footer>
   </div>
 
   <dialog id="project-dialog" class="dialog project-dialog" aria-labelledby="project-dialog-title">
     <form id="project-form">
-      <div class="dialog-heading"><div><p class="eyebrow">PROJECT</p><h2 id="project-dialog-title">プロジェクトを開く</h2></div><button type="button" class="icon-button" data-close-dialog="project-dialog" aria-label="閉じる">×</button></div>
+      <div class="dialog-heading"><h2 id="project-dialog-title">プロジェクトを開く</h2><button type="button" class="icon-button" data-close-dialog="project-dialog" aria-label="閉じる">×</button></div>
       <p class="dialog-description">原稿，参考文献，画像が入ったフォルダーを選びます．</p>
       <label class="field-label" for="project-path">プロジェクトフォルダー</label>
       <div class="path-field"><input id="project-path" data-testid="project-path" name="project-path" type="text" placeholder="C:\Users\…\Documents\paper" autocomplete="off" spellcheck="false" required><button type="button" id="pick-project" class="button">参照…</button></div>
+      <div id="project-picker-status" data-testid="project-picker-status" class="picker-status" role="status" hidden><span class="spinner" aria-hidden="true"></span><span>Windows のフォルダー選択画面で選んでください．</span><button type="button" id="cancel-picker" data-testid="cancel-picker" class="button button-small">選択を取り消す</button></div>
       <div class="field-group"><label class="field-label" for="project-tex-bin">TeX Live の bin フォルダー</label><input id="project-tex-bin" name="project-tex-bin" type="text" placeholder="空欄で自動検索" autocomplete="off" spellcheck="false"><p class="field-help" id="project-tex-help">例: C:\texlive\2025\bin\windows</p></div>
       <div id="project-recent" class="dialog-recent" hidden><h3>最近開いたプロジェクト</h3><div id="project-recent-list"></div></div>
       <p id="project-error" class="form-error" role="alert" hidden></p>
@@ -159,10 +151,11 @@
 
   <dialog id="settings-dialog" class="dialog" aria-labelledby="settings-title">
     <form id="settings-form">
-      <div class="dialog-heading"><div><p class="eyebrow">SETTINGS</p><h2 id="settings-title">編集とコンパイルの設定</h2></div><button type="button" class="icon-button" data-close-dialog="settings-dialog" aria-label="閉じる">×</button></div>
+      <div class="dialog-heading"><h2 id="settings-title">編集とコンパイルの設定</h2><button type="button" class="icon-button" data-close-dialog="settings-dialog" aria-label="閉じる">×</button></div>
       <div class="field-group"><label class="checkbox-field"><input type="checkbox" id="autosave-setting" data-testid="autosave-setting"><span>編集が落ち着いたら自動で保存する</span></label><p class="field-help">コンパイル中の自動保存は，終了するまで待ちます．自動保存を切っても，編集中の草稿は PC に記録されます．</p></div>
-      <div class="field-group"><label class="field-label" for="editor-font-size">エディタの文字サイズ</label><div class="font-size-field"><input id="editor-font-size" data-testid="editor-font-size" type="number" min="12" max="24" step="1" value="14" required><span>px</span></div><p class="field-help">12〜24 px で指定できます．既定は 14 px です．</p></div>
+      <div class="field-group"><label class="field-label" for="editor-font-size">エディタの文字サイズ</label><div class="font-size-field"><input id="editor-font-size" data-testid="editor-font-size" type="number" min="8" max="40" step="0.1" value="14" required><span>px</span></div><p class="field-help">8〜40 px で指定できます．既定は 14 px です．原稿上の Ctrl + ホイールやピンチ操作でも変更できます．</p></div>
       <div class="field-group"><label class="field-label" for="tex-bin">TeX Live の bin フォルダー</label><input id="tex-bin" data-testid="tex-bin" type="text" placeholder="空欄で自動検索" autocomplete="off" spellcheck="false"><p id="tex-tool-status" class="field-help"></p></div>
+      <div class="field-group"><span class="field-label">原稿と PDF の移動 (SyncTeX)</span><p id="synctex-tool-status" class="field-help"></p><div id="synctex-setup" class="synctex-setup" hidden><p class="field-help">PowerShell で次のコマンドを実行し，設定を開き直して SyncTeX のパスを確認してください．</p><pre id="synctex-install-commands" tabindex="0"></pre><button type="button" id="copy-synctex-setup" class="button button-small">コマンドをコピー</button></div></div>
       <div class="field-group" id="main-field"><label class="field-label" for="main-file">メイン文書</label><select id="main-file" data-testid="main-file"></select><p class="field-help">コンパイルする <code>.tex</code> ファイルを選びます．</p></div>
       <div class="field-group" id="mode-field"><label class="field-label" for="compile-mode">コンパイラー</label><select id="compile-mode" data-testid="compile-mode"><option value="project">latexmkrc の設定を使う</option><option value="pdflatex">pdfLaTeX</option><option value="uplatex">upLaTeX + dvipdfmx</option><option value="xelatex">XeLaTeX</option><option value="lualatex">LuaLaTeX</option></select><p id="mode-help" class="field-help">プロジェクト内の latexmkrc / .latexmkrc があれば，その設定を利用できます．</p></div>
       <p id="settings-error" class="form-error" role="alert" hidden></p>
@@ -176,9 +169,9 @@
 
   <dialog id="decision-dialog" class="dialog decision-dialog" aria-labelledby="decision-title"><div class="dialog-heading"><h2 id="decision-title"></h2></div><p id="decision-description" class="dialog-description"></p><div class="dialog-actions decision-actions"><button type="button" id="decision-cancel" class="button">キャンセル</button><button type="button" id="decision-secondary" class="button"></button><button type="button" id="decision-primary" class="button button-primary"></button></div></dialog>
 
-  <dialog id="conflict-dialog" class="dialog conflict-dialog" aria-labelledby="conflict-title"><div class="dialog-heading"><div><p class="eyebrow">FILE CHANGED</p><h2 id="conflict-title">保存する内容を確認</h2></div><button type="button" class="icon-button" data-close-dialog="conflict-dialog" aria-label="閉じる">×</button></div><p class="dialog-description" id="conflict-description"></p><div class="conflict-columns"><label>ディスクの内容<textarea id="disk-content" readonly spellcheck="false"></textarea></label><label>編集中の内容<textarea id="editing-content" readonly spellcheck="false"></textarea></label></div><p class="field-help">「編集中の内容で保存」はディスクの内容を上書きします．「ディスクの内容を開く」はエディタの内容を置き換えます．</p><div class="dialog-actions"><button type="button" id="conflict-cancel" class="button">戻る</button><button type="button" id="conflict-use-disk" class="button">ディスクの内容を開く</button><button type="button" id="conflict-overwrite" class="button button-primary">編集中の内容で保存</button></div></dialog>
+  <dialog id="conflict-dialog" class="dialog conflict-dialog" aria-labelledby="conflict-title"><div class="dialog-heading"><h2 id="conflict-title">保存する内容を確認</h2><button type="button" class="icon-button" data-close-dialog="conflict-dialog" aria-label="閉じる">×</button></div><p class="dialog-description" id="conflict-description"></p><div class="conflict-columns"><label>ディスクの内容<textarea id="disk-content" readonly spellcheck="false"></textarea></label><label>編集中の内容<textarea id="editing-content" readonly spellcheck="false"></textarea></label></div><p class="field-help">「編集中の内容で保存」はディスクの内容を上書きします．「ディスクの内容を開く」はエディタの内容を置き換えます．</p><div class="dialog-actions"><button type="button" id="conflict-cancel" class="button">戻る</button><button type="button" id="conflict-use-disk" class="button">ディスクの内容を開く</button><button type="button" id="conflict-overwrite" class="button button-primary">編集中の内容で保存</button></div></dialog>
 
-  <dialog id="recovery-dialog" data-testid="recovery-dialog" class="dialog conflict-dialog" aria-labelledby="recovery-title"><div class="dialog-heading"><div><p class="eyebrow">DRAFTS</p><h2 id="recovery-title">前回の草稿を確認</h2></div><button type="button" class="icon-button" data-close-dialog="recovery-dialog" aria-label="閉じる">×</button></div><label class="field-label" for="recovery-file">草稿が残っているファイル</label><select id="recovery-file" data-testid="recovery-file"></select><p id="recovery-description" class="dialog-description recovery-description"></p><div class="conflict-columns"><label>ディスクの内容<textarea id="recovery-disk" readonly spellcheck="false"></textarea></label><label>保存されている草稿<textarea id="recovery-draft" readonly spellcheck="false"></textarea></label></div><p id="recovery-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" id="delete-draft" class="button">この草稿を削除</button><button type="button" class="button" data-close-dialog="recovery-dialog">閉じる</button><button type="button" id="restore-draft" data-testid="restore-draft" class="button button-primary">草稿をエディタで開く</button></div></dialog>
+  <dialog id="recovery-dialog" data-testid="recovery-dialog" class="dialog conflict-dialog" aria-labelledby="recovery-title"><div class="dialog-heading"><h2 id="recovery-title">前回の草稿を確認</h2><button type="button" class="icon-button" data-close-dialog="recovery-dialog" aria-label="閉じる">×</button></div><label class="field-label" for="recovery-file">草稿が残っているファイル</label><select id="recovery-file" data-testid="recovery-file"></select><p id="recovery-description" class="dialog-description recovery-description"></p><div class="conflict-columns"><label>ディスクの内容<textarea id="recovery-disk" readonly spellcheck="false"></textarea></label><label>保存されている草稿<textarea id="recovery-draft" readonly spellcheck="false"></textarea></label></div><p id="recovery-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" id="delete-draft" class="button">この草稿を削除</button><button type="button" class="button" data-close-dialog="recovery-dialog">閉じる</button><button type="button" id="restore-draft" data-testid="restore-draft" class="button button-primary">草稿をエディタで開く</button></div></dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>
 </body>

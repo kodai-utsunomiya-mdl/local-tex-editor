@@ -254,7 +254,7 @@ func snapshotSourceRevisions(root string) map[string]string {
 	}
 	remaining := int64(128 << 20)
 	for _, file := range files {
-		if file.Size > maxTextSize || file.Size > remaining {
+		if file.Kind != "text" || file.Size > maxTextSize || file.Size > remaining {
 			continue
 		}
 		_, path, err := projectFilePath(root, file.Path, false)
@@ -280,7 +280,11 @@ func (a *App) cacheSyncTeX(root, originalPDF, cachedPDF, id, bin string, revisio
 	for _, extension := range []string{".synctex.gz", ".synctex"} {
 		candidate := stem + extension
 		info, err := os.Stat(candidate)
-		if err != nil || !info.Mode().IsRegular() {
+		if err != nil {
+			continue
+		}
+		regular, err := platform.IsRegularFile(candidate, info)
+		if err != nil || !regular {
 			continue
 		}
 		relative, err := filepath.Rel(root, candidate)
@@ -517,18 +521,6 @@ func syncProjectPath(root, raw string) (string, error) {
 	}
 	clean, _, err := projectFilePath(root, filepath.ToSlash(relative), false)
 	return clean, err
-}
-
-func findSynctex(bin string) (string, error) {
-	name := "synctex"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	path := filepath.Join(bin, name)
-	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-		return filepath.Abs(path)
-	}
-	return "", fail(http.StatusServiceUnavailable, "synctex が見つかりません (%s)．TeX Live で synctex パッケージを利用できる状態にしてください．", path)
 }
 
 type syncOutput struct {

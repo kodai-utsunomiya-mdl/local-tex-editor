@@ -7,7 +7,7 @@ Windows のブラウザで TeX の原稿を編集し，PC にある TeX Live で
 ## ダウンロードして起動する
 
 1. [Releases](https://github.com/kodai-utsunomiya-mdl/local-tex-editor/releases) を開き，最新のバージョンを選ぶ．
-2. **Assets** の `local-tex-editor-0.1.0-windows-x64.zip` をダウンロードする．`Source code` は開発用のソースである．
+2. **Assets** の `local-tex-editor-0.1.1-windows-x64.zip` をダウンロードする．`Source code` は開発用のソースである．
 3. ZIP を展開し，`local-tex-editor.exe` をダブルクリックする．
 4. 開いたブラウザで原稿のフォルダーを選ぶ．フォルダーのパスを入力して開くこともできる．
 5. TeX Live の場所が自動で見つからない場合は，設定に `C:\texlive\2025\bin\windows` など，`latexmk.exe` があるフォルダーを指定する．
@@ -17,11 +17,17 @@ Overleaf にある最新の原稿は，プロジェクトのソースを ZIP と
 
 アプリを終了する際は，画面の終了ボタンを使う．コンパイル中の処理も終了する．
 
+配布する実行ファイルにはコード署名が付いていない．GitHub のリリースから取得したファイルを開く際に SmartScreen の「Windows によって PC が保護されました」が出た場合は，「詳細情報」でアプリ名を確認し，「実行」を選ぶ．[Microsoft の案内](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/publish-first-app) も参照できる．
+
+更新する際は，現在のアプリを「終了」で閉じ，新しい ZIP を展開して `.exe` を起動する．設定と草稿は Windows ユーザーの設定フォルダーにあるため，更新後も読み込まれる．
+
 起動済みの状態で `.exe` をもう一度開くと，既存の編集画面へ接続する．同じ原稿を複数のプロセスが同時にコンパイルすることを防ぐ仕組みも入れている．
 
 ## 原稿を編集する
 
-左側のファイル一覧から `.tex`，`.bib` などを開く．複数のファイルはタブで切り替えられる．編集画面と PDF の間にある境界をドラッグすると，それぞれの幅を変更できる．右上のボタンでライト／ダークを切り替えられる．設定ではエディタの文字サイズを 12〜24 px に変更できる (既定は 14 px)．テーマと文字サイズの選択は，次回の起動でも同じになる．
+左側のファイル一覧から `.tex`，`.bib` などを開く．複数のファイルはタブで切り替えられる．編集画面と PDF の間にある境界をドラッグすると，それぞれの幅を変更できる．右上のボタンでライト／ダークを切り替えられる．設定ではエディタの文字サイズを 8〜40 px に変更できる (既定は 14 px)．テーマと文字サイズの選択は，次回の起動でも同じになる．
+
+フォルダーは左側の一覧で展開できる．画像や PDF を選ぶと，原稿と同じタブ欄でプレビューを開く．原稿のタブへ戻ると，編集中の内容とカーソルの位置から作業を続けられる．
 
 | 操作 | 使い方 |
 | --- | --- |
@@ -29,10 +35,15 @@ Overleaf にある最新の原稿は，プロジェクトのソースを ZIP と
 | 引用を入力する | `\citep{` や `\cite{` の中で，プロジェクト内の `.bib` にあるキーが候補になる．著者・年・題名も確認できる |
 | 相互参照を入力する | `\ref{`，`\eqref{`，`\cref{` などの中で，原稿の `\label` が候補になる |
 | 補完を呼び出す | `Ctrl + Space` を押す．TeX のコマンドも補完できる |
-| 原稿を検索・置換する | エディタで `Ctrl + F` を押す，または「検索」を押す |
+| 原稿を検索・置換する | エディタで `Ctrl + F` を押す，または「検索」を押す．複数行をそのまま貼り付けられる |
+| 原稿の文字を拡大・縮小する | エディタ上で `Ctrl + ホイール`，タッチパッドのピンチ，またはタッチ画面の 2 本指で操作する．設定の文字サイズにも反映される |
 | ファイルを保存する | `Ctrl + S` を押す．開いているファイルをすべて保存する操作は `Ctrl + Shift + S` |
 | コンパイルする | `Ctrl + Enter`，または「コンパイル」を押す．編集中のファイルを保存してから TeX を実行する |
 | エラーの行へ移動する | ログの上に表示されるファイル名と行番号をクリックする |
+
+検索欄と置換欄では，改行と TeX の `\` を入力どおりに扱う．`Enter` で次の一致箇所へ，`Shift + Enter` で前へ移動する．欄の中で改行を入力するには `Ctrl + Enter` を使う．正規表現は検索欄のチェックボックスから有効にできる．
+
+文字サイズやテーマの変更は，原稿の内容とコンパイル済みの PDF に影響しない．PDF の更新案内は，原稿またはコンパイルの設定に変更がある場合に表示される．
 
 ### 自動保存と作業の再開
 
@@ -57,6 +68,22 @@ PDF はページをまたいで連続してスクロールできる．表示中�
 | PDF を取り出す | 「PDF を保存」を押す |
 
 原稿と PDF の相互移動には，TeX Live の `synctex` を使う．コンパイル時に SyncTeX のデータを生成し，その PDF と一緒に保存する．TeX のマクロや数式の組み方によっては，クリックした文字の近くの行へ移動する．PDF を作成した後に原稿を編集した場合は，画面に更新の案内が出る．
+
+### SyncTeX を追加する
+
+`synctex.exe` が見つからない場合は，TeX Live Manager で `synctex` と Windows 用の実行ファイルを追加する．TeX Live 2025 を `C:\texlive\2025` に入れている場合は，PowerShell で次を順に実行する．
+
+```powershell
+& 'C:\texlive\2025\bin\windows\tlmgr.bat' --repository 'https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/tlnet-final' update --self
+
+& 'C:\texlive\2025\bin\windows\tlmgr.bat' --repository 'https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/tlnet-final' install --reinstall synctex synctex.windows
+
+& 'C:\texlive\2025\bin\windows\synctex.exe' help
+```
+
+旧年度の TeX Live にパッケージを追加する際は，その年度の `tlnet-final` を使う．上記の `--repository` は，各コマンドの取得先を指定する．`--reinstall` は，パッケージが登録済みで実行ファイルだけが欠けている場合にもファイルを取り直す．詳細は [TUG の配布先の案内](https://www.tug.org/texlive/acquire.html) と [tlmgr のマニュアル](https://www.tug.org/texlive/doc/tlmgr.html) にある．
+
+`synctex.exe help` で使い方が表示されたら，アプリで一度コンパイルしてから相互移動を使う．TeX Live の場所が異なる場合は，コマンドのパスとアプリの「TeX Live のフォルダー」を合わせる．
 
 再コンパイル後も同じページ付近を表示する．コンパイルが失敗した場合や途中で停止した場合も，前回成功した PDF を参照しながら修正を続けられる．
 
@@ -101,7 +128,7 @@ go build -o bin/local-tex-editor.exe ./cmd/local-tex-editor
 Windows 用の配布ファイルは次のコマンドで作成する．
 
 ```sh
-go build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=0.1.0" -o dist/local-tex-editor.exe ./cmd/local-tex-editor
+go build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=0.1.1" -o dist/local-tex-editor.exe ./cmd/local-tex-editor
 ```
 
 起動時のオプション:

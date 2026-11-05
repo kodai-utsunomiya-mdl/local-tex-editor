@@ -1,13 +1,13 @@
 {
   "name": "local-tex-editor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "A local browser editor for TeX Live projects",
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "playwright test --config tests/playwright.config.mjs",
-    "test:unit": "node --test tests/tex-tools.test.mjs",
+    "test:unit": "node --test tests/*.test.mjs",
     "test:ui": "playwright test --config tests/playwright.config.mjs"
   },
   "dependencies": {

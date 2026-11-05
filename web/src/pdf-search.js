@@ -12,14 +12,14 @@ export class PDFSearch {
 
     this.toggle = document.createElement('button');
     this.toggle.type = 'button';
-    this.toggle.className = 'button button-subtle button-small pdf-search-toggle';
-    this.toggle.textContent = 'PDF 内を検索';
+    this.toggle.className = 'icon-button pdf-search-toggle';
+    this.toggle.innerHTML = '<svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>';
+    this.toggle.setAttribute('aria-label', 'PDF 内を検索');
     this.toggle.dataset.testid = 'pdf-search-toggle';
     this.toggle.title = 'PDF 内を検索 (PDF にフォーカスして Ctrl+F)';
     this.toggle.setAttribute('aria-expanded', 'false');
     this.toggle.setAttribute('aria-controls', 'pdf-search-bar');
-    const title = pane.querySelector('.pane-title');
-    title.insertBefore(this.toggle, title.lastElementChild);
+    toolbar.insertBefore(this.toggle, toolbar.querySelector('#download-pdf'));
 
     this.bar = document.createElement('div');
     this.bar.id = 'pdf-search-bar';
