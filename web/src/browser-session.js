@@ -1,7 +1,7 @@
 // Keep one connection open for each editor tab. The local application waits
 // briefly after the final connection closes, so a reload can reconnect.
 export class BrowserSession {
-  constructor({ token, fetch: request = globalThis.fetch, onConnectionChange, retryDelays = [250, 500, 1000] }) {
+  constructor({ token, fetch: request = globalThis.fetch.bind(globalThis), onConnectionChange, retryDelays = [250, 500, 1000] }) {
     this.token = token;
     this.request = request;
     this.onConnectionChange = onConnectionChange;

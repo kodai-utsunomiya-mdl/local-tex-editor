@@ -19,6 +19,28 @@ function streamingServer() {
   return { connections, request };
 }
 
+test('the default fetch receives the browser global object as its receiver', async context => {
+  const server = streamingServer();
+  const statuses = [];
+  const receivers = [];
+  context.mock.method(globalThis, 'fetch', function (...args) {
+    receivers.push(this);
+    if (this !== globalThis) throw new TypeError('Illegal invocation');
+    return server.request(...args);
+  });
+  const session = new BrowserSession({ token: 'local-token', onConnectionChange: value => statuses.push(value) });
+  try {
+    session.start();
+    await delay(0);
+    assert.equal(receivers.length, 1);
+    assert.equal(receivers[0], globalThis);
+    assert.equal(server.connections.length, 1);
+    assert.deepEqual(statuses, [true]);
+  } finally {
+    session.stop();
+  }
+});
+
 test('one tab opens one authenticated stream and aborts it when stopped', async () => {
   const server = streamingServer();
   const statuses = [];
