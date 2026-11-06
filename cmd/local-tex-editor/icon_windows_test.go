@@ -38,8 +38,14 @@ func TestWindowsExecutableIcon(t *testing.T) {
 	if small != 0 {
 		defer user.NewProc("DestroyIcon").Call(small)
 	}
-	if extracted != 1 || large == 0 || small == 0 {
-		t.Fatalf("Windows could not extract the executable's icons: count=%d, large=%x, small=%x (%v)", extracted, large, small, callErr)
+	if uint32(extracted) == ^uint32(0) {
+		t.Fatalf("Windows could not extract the executable's icons: %v", callErr)
+	}
+	// ExtractIconExW counts the returned icons. Requesting both output arrays
+	// for one resource yields two handles: one large icon and one small icon.
+	// GetLastError is meaningful for this API only when it returns UINT_MAX.
+	if extracted != 2 || large == 0 || small == 0 {
+		t.Fatalf("Windows could not extract both executable icons: count=%d, large=%x, small=%x", extracted, large, small)
 	}
 	module, _, callErr := kernel.NewProc("LoadLibraryExW").Call(uintptr(unsafe.Pointer(wide)), 0, 0x22) // DATAFILE | IMAGE_RESOURCE
 	if module == 0 {

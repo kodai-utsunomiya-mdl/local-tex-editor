@@ -48,9 +48,10 @@ func TestWindowsShortcutRoundTripInTemporaryFolders(t *testing.T) {
 			t.Fatalf("shortcut working directory or arguments: %#v", link)
 		}
 		icon, err := os.ReadFile(link.IconPath)
-		if err != nil || !bytes.Equal(icon, branding.Icon) || link.IconIndex != 0 || !shortcutPathsEqual(filepath.Dir(link.IconPath), filepath.Dir(result.Executable)) {
+		if err != nil || !bytes.Equal(icon, branding.Icon) || link.IconIndex != 0 {
 			t.Fatalf("shortcut icon is not the installed artwork: %#v (%v)", link, err)
 		}
+		requireSameShortcutFile(t, filepath.Dir(link.IconPath), filepath.Dir(result.Executable))
 	}
 	checkLink(result.Shortcut)
 	if err := os.Remove(source); err != nil {
@@ -108,19 +109,33 @@ func TestWindowsShortcutUpdatesThePreviousExecutableIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, err := readShellShortcut(result.Shortcut)
-	if err != nil || !shortcutPathsEqual(before.IconPath, result.Executable) {
+	if err != nil {
 		t.Fatalf("pre-update shortcut: %#v (%v)", before, err)
 	}
+	requireSameShortcutFile(t, before.IconPath, result.Executable)
 	if _, err := createShortcutAt(result.Executable, root, root); err != nil {
 		t.Fatal(err)
 	}
 	after, err := readShellShortcut(result.Shortcut)
-	if err != nil || !shortcutPathsEqual(after.Target, result.Executable) || shortcutPathsEqual(after.IconPath, before.IconPath) {
+	if err != nil || filepath.Ext(after.IconPath) != ".ico" || after.IconIndex != 0 {
 		t.Fatalf("updated shortcut did not acquire a new icon path: %#v (%v)", after, err)
 	}
+	requireSameShortcutFile(t, after.Target, result.Executable)
+	requireSameShortcutFile(t, filepath.Dir(after.IconPath), filepath.Dir(result.Executable))
 	data, err := os.ReadFile(after.IconPath)
 	if err != nil || !bytes.Equal(data, branding.Icon) {
 		t.Fatalf("updated shortcut artwork: %v", err)
+	}
+}
+
+// The Shell can expand an 8.3 path in one field while returning another field
+// with its original spelling. Compare their file identities in either form.
+func requireSameShortcutFile(t *testing.T, first, second string) {
+	t.Helper()
+	firstInfo, firstErr := os.Stat(first)
+	secondInfo, secondErr := os.Stat(second)
+	if firstErr != nil || secondErr != nil || !os.SameFile(firstInfo, secondInfo) {
+		t.Fatalf("shortcut paths refer to different files: %q and %q (%v %v)", first, second, firstErr, secondErr)
 	}
 }
 
