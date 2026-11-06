@@ -82,7 +82,7 @@ async function openPDFViewer(page, pdf) {
     ['/style.css', { contentType: 'text/css', body: await readFile(path.join(repository, 'web/src/style.css')) }],
     ['/pdf-search.css', { contentType: 'text/css', body: await readFile(path.join(repository, 'web/src/pdf-search.css')) }],
     ['/api/pdf', { contentType: 'application/pdf', body: pdf }],
-    ['/', { contentType: 'text/html', body: `<!doctype html><html><head>
+    ['/', { contentType: 'text/html', body: `<!doctype html><html><head><meta charset="utf-8">
       <link rel="stylesheet" href="/pdf_viewer.css"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/pdf-search.css">
       <style>#pdf-pane { width: 900px; height: 900px; }</style>
       </head><body>${pane}<script type="module" src="/viewer.js"></script></body></html>` }],
@@ -723,9 +723,16 @@ test('PDF の倍率とページの回転に合わせて SyncTeX の位置を強�
 
     for (const zoom of ['0.75', '1.5']) {
       if (zoom === '1.5') await page.getByTestId('pdf-zoom').selectOption(zoom);
-      await expect(page.getByTestId('pdf-canvas')).toHaveAttribute('data-page', String(number));
-      await expect(page.getByTestId('pdf-canvas')).toHaveAttribute('data-ready', 'true');
-      await expect(page.getByTestId('synctex-highlight')).toBeVisible();
+      const highlight = page.locator(`.pdfViewer .page[data-page-number="${number}"]`).getByTestId('synctex-highlight');
+      await expect(highlight).toBeVisible();
+      // Several small pages fit in this preview. Zoom can change which page
+      // PDF.js calls current, so inspect the requested page's own canvas and
+      // bring its target into view before testing the double-click.
+      await highlight.scrollIntoViewIfNeeded();
+      await expect.poll(() => page.evaluate(pageNumber => {
+        const canvas = window.testViewer.pageViewer.getPageView(pageNumber - 1).canvas;
+        return { page: canvas?.dataset.page, ready: canvas?.dataset.ready };
+      }, number)).toEqual({ page: String(number), ready: 'true' });
       const measured = await page.evaluate(pageNumber => {
         const view = window.testViewer.pageViewer.getPageView(pageNumber - 1);
         const canvas = view.canvas;
