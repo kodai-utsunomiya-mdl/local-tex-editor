@@ -510,7 +510,13 @@ test('長い原稿の中央への最後の入力をタブが閉じた後に草�
   const finalInput = '最後の追記';
   const content = '% 長い日本語の原稿 <>& 😀\n'.repeat(6000) + marker + '\n' + '% 後半の本文\n'.repeat(6000);
   expect(Buffer.byteLength(content)).toBeGreaterThan(300_000);
-  await replaceEditor(page, content);
+  // Use the browser's paste event so CodeMirror can insert the full document
+  // in one transaction. Input.insertText uses the browser's editing path.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(text => navigator.clipboard.writeText(text), content);
+  await page.getByTestId('editor').locator('.cm-content').click();
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Control+V');
   const current = await json(session, '/api/state');
   const storageURL = `/api/storage?${new URLSearchParams({ key: `drafts:${current.project.root}` })}`;
   await expect.poll(async () => {
