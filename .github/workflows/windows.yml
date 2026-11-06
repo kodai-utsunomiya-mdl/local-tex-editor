@@ -45,6 +45,9 @@ jobs:
       - name: Build the frontend
         run: npm run build
 
+      - name: Embed the Windows application icon
+        run: npm run build:windows-resources
+
       - name: Run Go tests
         run: go test ./...
 
@@ -56,6 +59,13 @@ jobs:
           go build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=$version" -o bin/local-tex-editor.exe ./cmd/local-tex-editor
           if ($LASTEXITCODE -ne 0) { throw 'The Windows build failed.' }
           "LOCAL_TEX_EDITOR_TEST_EXE=$((Resolve-Path bin/local-tex-editor.exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check the icons in the Windows application
+        shell: pwsh
+        run: |
+          $env:LOCAL_TEX_EDITOR_ICON_EXE = (Resolve-Path 'bin/local-tex-editor.exe').Path
+          go test ./cmd/local-tex-editor -run '^TestWindowsExecutableIcon$' -count=1 -v
+          if ($LASTEXITCODE -ne 0) { throw 'The Windows icon check failed.' }
 
       - name: Set up TeX Live for tests
         uses: r-lib/actions/setup-tinytex@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2

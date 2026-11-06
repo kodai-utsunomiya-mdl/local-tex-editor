@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/kodai-utsunomiya-mdl/local-tex-editor/internal/branding"
 )
 
 const shortcutApplication = "github.com/kodai-utsunomiya-mdl/local-tex-editor"
@@ -255,4 +258,47 @@ func writeShortcutInstallation(path string, data []byte, replace bool) error {
 		return err
 	}
 	return commitShortcutFile(file.Name(), path, replace)
+}
+
+// A new name for each artwork revision also gives Explorer a new cache entry.
+// The .lnk can then use the updated icon even after the executable is replaced
+// at its existing installation path.
+func installShortcutIcon(directory string) (string, bool, error) {
+	hash := sha256.Sum256(branding.Icon)
+	name := "local-tex-editor-icon-" + hex.EncodeToString(hash[:8]) + ".ico"
+	path := filepath.Join(directory, name)
+	if info, err := shortcutRegularFile(path); err == nil {
+		if info.Size() != int64(len(branding.Icon)) {
+			return "", false, fmt.Errorf("アプリのアイコンと同名の別ファイルがあります (%s)．%w", path, ErrShortcutConflict)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", false, err
+		}
+		if !bytes.Equal(data, branding.Icon) {
+			return "", false, fmt.Errorf("アプリのアイコンと同名の別ファイルがあります (%s)．%w", path, ErrShortcutConflict)
+		}
+		return path, false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+	file, err := os.CreateTemp(directory, "local-tex-editor-icon-*.tmp")
+	if err != nil {
+		return "", false, err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if _, err := file.Write(branding.Icon); err != nil {
+		return "", false, err
+	}
+	if err := file.Sync(); err != nil {
+		return "", false, err
+	}
+	if err := file.Close(); err != nil {
+		return "", false, err
+	}
+	if err := commitShortcutFile(file.Name(), path, false); err != nil {
+		return "", false, err
+	}
+	return path, true, nil
 }

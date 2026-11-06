@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { build as bundle } from 'esbuild';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -22,7 +23,11 @@ function exampleFigurePDF() {
     `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}endstream`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
   ];
-  let pdf = '%PDF-1.4\n';
+  return pdfFromObjects(objects);
+}
+
+function pdfFromObjects(objects) {
+  let pdf = '%PDF-1.7\n';
   const offsets = [0];
   for (const [index, object] of objects.entries()) {
     offsets.push(Buffer.byteLength(pdf));
@@ -33,6 +38,63 @@ function exampleFigurePDF() {
   for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
   pdf += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf);
+}
+
+function pdfWithRotatedPages() {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R 9 0 R] /Count 4 >>',
+  ];
+  for (const rotation of [0, 90, 180, 270]) {
+    // The filled rectangle starts 40 points from the page's left edge
+    // and 70 points from its top edge, with a width of 80 and a height of 18.
+    const content = '0 g 40 312 80 18 re f\n';
+    const contentObject = objects.length + 2;
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Rotate ${rotation} /Resources << >> /Contents ${contentObject} 0 R >>`,
+      `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}endstream`,
+    );
+  }
+  return pdfFromObjects(objects);
+}
+
+async function openPDFViewer(page, pdf) {
+  const source = await readFile(path.join(repository, 'web/src/index.html'), 'utf8');
+  const pane = source.match(/<section class="pdf-pane"[\s\S]*?<\/section>/)?.[0];
+  expect(pane).toBeTruthy();
+  const script = await bundle({
+    stdin: {
+      contents: `import { PDFViewer } from './pdf-viewer.js';
+        window.viewerErrors = [];
+        window.inverseLocations = [];
+        window.testViewer = new PDFViewer({ token: 'test-token',
+          onError: error => window.viewerErrors.push(error.message),
+          onInverse: location => window.inverseLocations.push(location) });
+        await window.testViewer.load('test-build', 'test-project');`,
+      resolveDir: path.join(repository, 'web/src'),
+    },
+    bundle: true, format: 'esm', write: false,
+  });
+  const assets = new Map([
+    ['/viewer.js', { contentType: 'text/javascript', body: script.outputFiles[0].text }],
+    ['/pdf.worker.min.mjs', { contentType: 'text/javascript', body: await readFile(path.join(repository, 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs')) }],
+    ['/pdf_viewer.css', { contentType: 'text/css', body: await readFile(path.join(repository, 'node_modules/pdfjs-dist/web/pdf_viewer.css')) }],
+    ['/style.css', { contentType: 'text/css', body: await readFile(path.join(repository, 'web/src/style.css')) }],
+    ['/pdf-search.css', { contentType: 'text/css', body: await readFile(path.join(repository, 'web/src/pdf-search.css')) }],
+    ['/api/pdf', { contentType: 'application/pdf', body: pdf }],
+    ['/', { contentType: 'text/html', body: `<!doctype html><html><head>
+      <link rel="stylesheet" href="/pdf_viewer.css"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/pdf-search.css">
+      <style>#pdf-pane { width: 900px; height: 900px; }</style>
+      </head><body>${pane}<script type="module" src="/viewer.js"></script></body></html>` }],
+  ]);
+  const origin = 'http://127.0.0.1:41537';
+  await page.route(`${origin}/**`, async route => {
+    const asset = assets.get(new URL(route.request().url()).pathname);
+    if (asset) await route.fulfill(asset);
+    else await route.fulfill({ status: 404, body: '' });
+  });
+  await page.goto(origin);
+  await expect(page.getByTestId('pdf-canvas')).toHaveAttribute('data-ready', 'true');
 }
 
 async function waitUntil(read, predicate, timeout, description) {
@@ -648,7 +710,76 @@ test('日本語の原稿を編集し，参考文献と PDF を更新する', asy
   expect(errors).toEqual([]);
 });
 
+test('PDF の倍率とページの回転に合わせて SyncTeX の位置を強調する', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await openPDFViewer(page, pdfWithRotatedPages());
+
+  for (const number of [1, 2, 3, 4]) {
+    const location = { page: number, x: 40, y: 70, width: 80, height: 18 };
+    await page.getByTestId('pdf-zoom').selectOption('0.75');
+    expect(await page.evaluate(target => window.testViewer.showLocation(target), location)).toBe(true);
+    await expect(page.getByTestId('pdf-page')).toHaveValue(String(number));
+
+    for (const zoom of ['0.75', '1.5']) {
+      if (zoom === '1.5') await page.getByTestId('pdf-zoom').selectOption(zoom);
+      await expect(page.getByTestId('pdf-canvas')).toHaveAttribute('data-page', String(number));
+      await expect(page.getByTestId('pdf-canvas')).toHaveAttribute('data-ready', 'true');
+      await expect(page.getByTestId('synctex-highlight')).toBeVisible();
+      const measured = await page.evaluate(pageNumber => {
+        const view = window.testViewer.pageViewer.getPageView(pageNumber - 1);
+        const canvas = view.canvas;
+        const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        let left = canvas.width, top = canvas.height, right = -1, bottom = -1;
+        for (let y = 0; y < canvas.height; y++) {
+          for (let x = 0; x < canvas.width; x++) {
+            const offset = (y * canvas.width + x) * 4;
+            if (pixels[offset + 3] > 200 && pixels[offset] < 32 && pixels[offset + 1] < 32 && pixels[offset + 2] < 32) {
+              left = Math.min(left, x); top = Math.min(top, y);
+              right = Math.max(right, x); bottom = Math.max(bottom, y);
+            }
+          }
+        }
+        const rect = canvas.getBoundingClientRect();
+        const ink = {
+          left: rect.left + left * rect.width / canvas.width,
+          top: rect.top + top * rect.height / canvas.height,
+          right: rect.left + (right + 1) * rect.width / canvas.width,
+          bottom: rect.top + (bottom + 1) * rect.height / canvas.height,
+        };
+        const mark = view.div.querySelector('.synctex-highlight').getBoundingClientRect();
+        return { ink, mark: { left: mark.left, top: mark.top, right: mark.right, bottom: mark.bottom },
+          scale: view.viewport.scale, rotation: view.viewport.rotation, errors: window.viewerErrors };
+      }, number);
+      expect(measured.scale).toBeCloseTo(Number(zoom) * 4 / 3, 6);
+      expect(measured.rotation).toBe((number - 1) * 90);
+      expect(measured.ink.right).toBeGreaterThan(measured.ink.left);
+      expect(measured.ink.bottom).toBeGreaterThan(measured.ink.top);
+      // Compare the highlight with pixels rendered by PDF.js, including the
+      // page rotation, zoom, and CSS rounding of the canvas.
+      for (const [edge, padding] of [['left', 4], ['top', 3], ['right', -4], ['bottom', -3]]) {
+        expect(Math.abs(measured.ink[edge] - measured.mark[edge] - padding), `${number}: ${zoom}, ${edge}`).toBeLessThan(2);
+      }
+      expect(measured.errors).toEqual([]);
+      expect(errors).toEqual([]);
+
+      const previousCount = await page.evaluate(() => window.inverseLocations.length);
+      await page.mouse.dblclick((measured.ink.left + measured.ink.right) / 2, (measured.ink.top + measured.ink.bottom) / 2);
+      await expect.poll(() => page.evaluate(() => window.inverseLocations.length)).toBe(previousCount + 1);
+      const inverse = await page.evaluate(() => window.inverseLocations.at(-1));
+      expect(inverse.buildId).toBe('test-build');
+      expect(inverse.page).toBe(number);
+      expect(Math.abs(inverse.x - (location.x + location.width / 2))).toBeLessThan(1);
+      expect(Math.abs(inverse.y - (location.y + location.height / 2))).toBeLessThan(1);
+    }
+  }
+  expect(await page.evaluate(() => window.viewerErrors)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test('日本語のファイル名で原稿と PDF の位置を行き来する', async ({ page, session }, testInfo) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
   const sourcePath = '追加の 原稿.tex';
   await openProject(session);
   await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
@@ -690,9 +821,36 @@ test('日本語のファイル名で原稿と PDF の位置を行き来する', 
   const forwardResponse = page.waitForResponse(response =>
     new URL(response.url()).pathname === '/api/synctex/forward' && response.request().method() === 'POST');
   await page.getByTestId('synctex-forward').click();
-  expect((await forwardResponse).ok()).toBe(true);
+  const response = await forwardResponse;
+  expect(response.ok()).toBe(true);
+  const requestedLocation = (await response.json()).locations.find(item => item.page === 2);
+  expect(requestedLocation).toBeDefined();
+  await expect(page.getByTestId('synctex-forward')).toBeEnabled();
   await expect(page.getByTestId('pdf-page')).toHaveValue('2');
   await expect(canvas).toHaveAttribute('data-page', '2');
+  await expect(page.getByTestId('app-error')).not.toBeVisible();
+  const highlight = page.getByTestId('synctex-highlight');
+  await expect(highlight).toBeVisible();
+  const box = await highlight.evaluate(element => ({
+    left: parseFloat(element.style.left), top: parseFloat(element.style.top),
+    width: parseFloat(element.style.width), height: parseFloat(element.style.height),
+    page: element.closest('.page').dataset.pageNumber,
+  }));
+  expect(box.page).toBe('2');
+  for (const value of [box.left, box.top, box.width, box.height]) expect(Number.isFinite(value)).toBe(true);
+  expect(box.left).toBeGreaterThanOrEqual(-4);
+  expect(box.top).toBeGreaterThanOrEqual(-3);
+  expect(box.width).toBeGreaterThan(8);
+  expect(box.height).toBeGreaterThan(6);
+  expect(errors).toEqual([]);
+
+  const clickedForward = page.waitForResponse(result =>
+    new URL(result.url()).pathname === '/api/synctex/forward' && result.request().method() === 'POST');
+  await editor.locator('.cm-line').filter({ hasText: 'これは SyncTeX' }).click({ modifiers: ['Control'] });
+  expect((await clickedForward).ok()).toBe(true);
+  await expect(page.getByTestId('synctex-forward')).toBeEnabled();
+  await expect(page.getByTestId('app-error')).not.toBeVisible();
+  await expect(highlight).toBeVisible();
 
   // Open another source file first, so that the click proves the inverse query
   // navigates to the included file instead of leaving an existing editor open.
@@ -725,6 +883,7 @@ test('日本語のファイル名で原稿と PDF の位置を行き来する', 
     method: 'POST', data: { buildId: finished.pdfBuildId, path: sourcePath, line: 2, column: 1 },
   });
   expect(restoredForward.locations.some(item => item.page === 2)).toBe(true);
+  expect(errors).toEqual([]);
 });
 
 test('自動保存，補完，アウトラインを使い，草稿を再起動後に戻す', async ({ page, session }) => {

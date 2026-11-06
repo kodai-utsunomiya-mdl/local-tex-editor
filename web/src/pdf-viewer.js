@@ -302,16 +302,19 @@ export class PDFViewer {
     if (!location || location.buildId !== this.buildId) return;
     const view = this.pageViewer.getPageView(location.page - 1);
     if (!view?.pdfPage) return;
-    let mark = view.div.querySelector('.synctex-highlight');
-    if (!mark) { mark = document.createElement('div'); mark.className = 'synctex-highlight'; mark.dataset.testid = 'synctex-highlight'; mark.setAttribute('aria-hidden', 'true'); view.div.append(mark); }
     const bounds = view.pdfPage.view;
     const x = bounds[0] + location.x;
     const y = bounds[3] - location.y;
-    const box = view.viewport.convertToViewportRectangle([x, y, x + Math.max(4, location.width || 0), y - Math.max(4, location.height || 0)]);
-    mark.style.left = `${Math.min(box[0], box[2]) - 4}px`;
-    mark.style.top = `${Math.min(box[1], box[3]) - 3}px`;
-    mark.style.width = `${Math.abs(box[2] - box[0]) + 8}px`;
-    mark.style.height = `${Math.abs(box[3] - box[1]) + 6}px`;
+    // PDF.js 6 uses point conversion for rectangles as well. Transform both
+    // corners so the highlight follows the viewport's scale and page rotation.
+    const start = view.viewport.convertToViewportPoint(x, y);
+    const end = view.viewport.convertToViewportPoint(x + Math.max(4, location.width || 0), y - Math.max(4, location.height || 0));
+    let mark = view.div.querySelector('.synctex-highlight');
+    if (!mark) { mark = document.createElement('div'); mark.className = 'synctex-highlight'; mark.dataset.testid = 'synctex-highlight'; mark.setAttribute('aria-hidden', 'true'); view.div.append(mark); }
+    mark.style.left = `${Math.min(start[0], end[0]) - 4}px`;
+    mark.style.top = `${Math.min(start[1], end[1]) - 3}px`;
+    mark.style.width = `${Math.abs(end[0] - start[0]) + 8}px`;
+    mark.style.height = `${Math.abs(end[1] - start[1]) + 6}px`;
   }
 
   clearHighlight() {

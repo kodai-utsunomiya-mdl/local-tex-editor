@@ -16,7 +16,7 @@ Windows のブラウザでローカルの TeX プロジェクトを編集する�
 ### GET /api/state
 
 ```json
-{"version":"0.1.1","platform":"windows","shortcutsSupported":true,"texBin":"C:\\texlive\\2025\\bin\\windows","latexmk":"...","synctex":"...","synctexInstallCommands":[],"project":null,"recentProjects":[],"build":null}
+{"version":"0.1.2","platform":"windows","shortcutsSupported":true,"texBin":"C:\\texlive\\2025\\bin\\windows","latexmk":"...","synctex":"...","synctexInstallCommands":[],"project":null,"recentProjects":[],"build":null}
 ```
 
 synctex は利用できる実行ファイルのパス．見つからない場合は空文字列と synctexError の説明を返す．Windows で TeX Live の管理ツールと年版が確認できた場合は，設定画面に表示する PowerShell のコマンドを synctexInstallCommands へ入れる．
@@ -130,6 +130,8 @@ CLI の形式と座標は TeX Live の [synctex_main.c](https://github.com/TeX-L
 Windows で起動用のショートカットを作成する．入力は `{ "destination":"start-menu" }` または `{ "destination":"desktop" }`．実行ファイルをユーザーの LocalAppData の `Programs\LocalTeXEditor\local-tex-editor.exe` に配置し，選んだ Known Folder へ `Local TeX Editor.lnk` を作る．成功時は `{ "executable":"...", "shortcut":"...", "message":"..." }` を返す．UI は設定画面のボタン操作から呼ぶ．
 
 配置先とショートカット名はアプリで固定する．アプリ自身が配置した旧バージョンは更新できる．起動している旧バージョンのファイルを置き換えられない場合は，終了してから再度実行する案内を返す．
+
+ショートカットのアイコンはアプリの設置先に保存する．ファイル名に画像の SHA-256 の先頭 16 桁を含め，画像が更新された際に Explorer が新しい画像を読み込めるようにする．既存のアプリ用ショートカットも再作成し，専用アイコンへ更新する．
 
 ### GET /api/storage?key=文字列
 

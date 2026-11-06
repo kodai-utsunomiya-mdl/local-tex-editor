@@ -78,7 +78,6 @@ func createShortcutAt(source, localAppData, shortcutDirectory string) (ShortcutR
 	target := filepath.Join(directory, shortcutExecutableName)
 	shortcut := filepath.Join(shortcutDirectory, shortcutName)
 	existed := false
-	alreadyPointsToTarget := false
 	if info, err := shortcutRegularFile(shortcut); err == nil {
 		if info.Size() > 1<<20 {
 			return ShortcutResult{}, fmt.Errorf("同名の別ファイルがあります (%s)．%w", shortcut, ErrShortcutConflict)
@@ -88,7 +87,6 @@ func createShortcutAt(source, localAppData, shortcutDirectory string) (ShortcutR
 			return ShortcutResult{}, fmt.Errorf("同名の別のショートカットがあります (%s)．%w", shortcut, ErrShortcutConflict)
 		}
 		existed = true
-		alreadyPointsToTarget = shortcutPathsEqual(link.Target, target)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return ShortcutResult{}, err
 	}
@@ -96,22 +94,43 @@ func createShortcutAt(source, localAppData, shortcutDirectory string) (ShortcutR
 	if err != nil {
 		return ShortcutResult{}, err
 	}
-	if !alreadyPointsToTarget {
-		temporary, err := os.CreateTemp(shortcutDirectory, "Local TeX Editor-*.lnk")
-		if err != nil {
-			return ShortcutResult{}, fmt.Errorf("ショートカットを保存できません: %w", err)
-		}
-		staged := temporary.Name()
-		_ = temporary.Close()
-		defer os.Remove(staged)
-		if err := writeShellShortcut(staged, installed); err != nil {
-			return ShortcutResult{}, err
-		}
-		if err := commitShortcutFile(staged, shortcut, existed); err != nil {
-			return ShortcutResult{}, fmt.Errorf("ショートカットを保存できません (%s): %w", shortcut, err)
-		}
+	icon, iconCreated, err := installShortcutIcon(directory)
+	if err != nil {
+		return ShortcutResult{}, fmt.Errorf("ショートカットのアイコンを保存できません: %w", err)
 	}
+	temporary, err := os.CreateTemp(shortcutDirectory, "Local TeX Editor-*.lnk")
+	if err != nil {
+		return ShortcutResult{}, fmt.Errorf("ショートカットを保存できません: %w", err)
+	}
+	staged := temporary.Name()
+	_ = temporary.Close()
+	defer os.Remove(staged)
+	if err := writeShellShortcut(staged, installed, icon); err != nil {
+		return ShortcutResult{}, err
+	}
+	if err := commitShortcutFile(staged, shortcut, existed); err != nil {
+		return ShortcutResult{}, fmt.Errorf("ショートカットを保存できません (%s): %w", shortcut, err)
+	}
+	// Refresh this application's entries without restarting Explorer or touching
+	// the user's icon-cache database. The content-hashed ICO path changes with
+	// the artwork, and rewriting the link also upgrades pre-icon installations.
+	notifyShellFileChange(installed, false)
+	notifyShellFileChange(icon, iconCreated)
+	notifyShellFileChange(shortcut, !existed)
 	return ShortcutResult{Executable: installed, Shortcut: shortcut, Message: "次回からこのショートカットで起動できます．"}, nil
+}
+
+func notifyShellFileChange(path string, created bool) {
+	wide, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	event := uintptr(0x00002000) // SHCNE_UPDATEITEM
+	if created {
+		event = 0x00000002 // SHCNE_CREATE
+	}
+	shell32.NewProc("SHChangeNotify").Call(event, 0x0005|0x2000,
+		uintptr(unsafe.Pointer(wide)), 0) // SHCNF_PATHW | SHCNF_FLUSHNOWAIT
 }
 
 func withShellShortcut(use func(link, persistent *nativeCOMObject) error) error {
@@ -142,7 +161,7 @@ func shortcutCOMError(action string, result uintptr) error {
 	return fmt.Errorf("ショートカットを%sできません (HRESULT 0x%08X)．", action, uint32(result))
 }
 
-func writeShellShortcut(path, target string) error {
+func writeShellShortcut(path, target, iconPath string) error {
 	return withShellShortcut(func(link, persistent *nativeCOMObject) error {
 		for _, field := range []struct {
 			index int
@@ -161,7 +180,7 @@ func writeShellShortcut(path, target string) error {
 				return shortcutCOMError("設定", result)
 			}
 		}
-		icon, err := syscall.UTF16PtrFromString(target)
+		icon, err := syscall.UTF16PtrFromString(iconPath)
 		if err != nil {
 			return err
 		}
@@ -186,6 +205,8 @@ type shellShortcut struct {
 	Target           string
 	WorkingDirectory string
 	Arguments        string
+	IconPath         string
+	IconIndex        int32
 }
 
 func readShellShortcut(path string) (shellShortcut, error) {
@@ -213,6 +234,12 @@ func readShellShortcut(path string) (shellShortcut, error) {
 			}
 			*field.target = syscall.UTF16ToString(buffer)
 		}
+		clear(buffer)
+		if result := link.call(16, uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)),
+			uintptr(unsafe.Pointer(&value.IconIndex))); int32(result) < 0 { // IShellLinkW::GetIconLocation
+			return shortcutCOMError("読み取り", result)
+		}
+		value.IconPath = syscall.UTF16ToString(buffer)
 		return nil
 	})
 	return value, err

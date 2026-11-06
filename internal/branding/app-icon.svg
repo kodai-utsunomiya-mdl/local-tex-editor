@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Local TeX Editor">
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#0d766e"/>
+  <g fill="#fff" transform="translate(-4)">
+    <path d="M28 71h80v25h-8l-4-14H78v75l12 2v9H45v-9l12-2V82H40l-4 14h-8z"/>
+    <path d="M90 98h64v23h-8l-4-12h-25v24h19l3-10h8v29h-8l-3-10h-19v31h27l7-17h8l-3 28H90v-9l10-2v-64l-10-2z"/>
+    <path d="M155 71h36v9l-9 2 17 25 15-24-9-3v-9h30v9l-9 4-21 33 24 39 9 3v9h-38v-9l9-2-18-27-16 26 9 3v9h-31v-9l10-4 22-36-23-36-7-3z"/>
+  </g>
+</svg>

@@ -7,7 +7,7 @@ Windows のブラウザで TeX の原稿を編集し，PC にある TeX Live で
 ## ダウンロードして起動する
 
 1. [Releases](https://github.com/kodai-utsunomiya-mdl/local-tex-editor/releases) を開き，最新のバージョンを選ぶ．
-2. **Assets** の `local-tex-editor-0.1.1-windows-x64.zip` をダウンロードする．`Source code` は開発用のソースである．
+2. **Assets** の `local-tex-editor-0.1.2-windows-x64.zip` をダウンロードする．`Source code` は開発用のソースである．
 3. ZIP を展開し，`local-tex-editor.exe` をダブルクリックする．
 4. 開いたブラウザで原稿のフォルダーを選ぶ．フォルダーのパスを入力して開くこともできる．
 5. TeX Live の場所が自動で見つからない場合は，設定に `C:\texlive\2025\bin\windows` など，`latexmk.exe` があるフォルダーを指定する．
@@ -31,7 +31,9 @@ Overleaf にある最新の原稿は，プロジェクトのソースを ZIP と
 
 この操作で，アプリを `%LOCALAPPDATA%\Programs\LocalTeXEditor\local-tex-editor.exe` に配置する．ダウンロード時のフォルダーを移動しても，ショートカットから起動できる．設定と草稿は共通の場所から読み込む．
 
-新しいバージョンに更新する際は，アプリを終了してから新しい ZIP の `.exe` を起動し，ショートカットの作成をもう一度押す．配置済みのアプリも更新される．
+実行ファイル，ショートカット，ブラウザのタブには，緑の背景に白い TeX の専用アイコンを使う．
+
+新しいバージョンに更新する際は，アプリを終了してから新しい ZIP の `.exe` を起動し，ショートカットの作成をもう一度押す．配置済みのアプリと，そのボタンに対応するショートカットのアイコンが更新される．スタートメニューとデスクトップの両方に作成済みの場合は，両方のボタンを押す．
 
 ## 原稿を編集する
 
@@ -131,6 +133,7 @@ PDF はページをまたいで連続してスクロールできる．表示中�
 npm ci
 npm run test:unit
 npm run build
+npm run build:windows-resources
 go test ./...
 go build -o bin/local-tex-editor.exe ./cmd/local-tex-editor
 ```
@@ -138,8 +141,10 @@ go build -o bin/local-tex-editor.exe ./cmd/local-tex-editor
 Windows 用の配布ファイルは次のコマンドで作成する．
 
 ```sh
-go build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=0.1.1" -o dist/local-tex-editor.exe ./cmd/local-tex-editor
+go build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=0.1.2" -o dist/local-tex-editor.exe ./cmd/local-tex-editor
 ```
+
+`build:windows-resources` は同梱の ICO から Windows x64 用の resource を生成する．実行ファイルのビルド時に，16〜256 px の 9 サイズのアイコンが組み込まれる．
 
 起動時のオプション:
 

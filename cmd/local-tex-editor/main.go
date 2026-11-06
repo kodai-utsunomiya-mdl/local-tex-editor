@@ -21,7 +21,7 @@ import (
 	"github.com/kodai-utsunomiya-mdl/local-tex-editor/web"
 )
 
-var version = "0.1.1"
+var version = "0.1.2"
 var noBrowser bool
 
 func main() {

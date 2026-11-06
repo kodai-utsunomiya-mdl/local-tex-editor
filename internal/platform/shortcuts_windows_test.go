@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/kodai-utsunomiya-mdl/local-tex-editor/internal/branding"
 )
 
 func TestWindowsShortcutRoundTripInTemporaryFolders(t *testing.T) {
@@ -45,6 +47,10 @@ func TestWindowsShortcutRoundTripInTemporaryFolders(t *testing.T) {
 		if actualErr != nil || expectedErr != nil || !shortcutPathsEqual(actualDirectory, expectedDirectory) || link.Arguments != "" {
 			t.Fatalf("shortcut working directory or arguments: %#v", link)
 		}
+		icon, err := os.ReadFile(link.IconPath)
+		if err != nil || !bytes.Equal(icon, branding.Icon) || link.IconIndex != 0 || !shortcutPathsEqual(filepath.Dir(link.IconPath), filepath.Dir(result.Executable)) {
+			t.Fatalf("shortcut icon is not the installed artwork: %#v (%v)", link, err)
+		}
 	}
 	checkLink(result.Shortcut)
 	if err := os.Remove(source); err != nil {
@@ -54,6 +60,7 @@ func TestWindowsShortcutRoundTripInTemporaryFolders(t *testing.T) {
 	if _, err := createShortcutAt(result.Executable, localAppData, desktop); err != nil {
 		t.Fatalf("creating the same shortcut from the installed executable: %v", err)
 	}
+	checkLink(result.Shortcut)
 	startMenu := filepath.Join(root, "スタートメニュー", "Programs")
 	if err := os.MkdirAll(startMenu, 0700); err != nil {
 		t.Fatal(err)
@@ -71,7 +78,7 @@ func TestWindowsShortcutLeavesAnotherApplicationLinkUntouched(t *testing.T) {
 	writeShortcutTestFile(t, source, []byte("this application\n"))
 	writeShortcutTestFile(t, other, []byte("another application\n"))
 	shortcut := filepath.Join(root, shortcutName)
-	if err := writeShellShortcut(shortcut, other); err != nil {
+	if err := writeShellShortcut(shortcut, other, other); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(shortcut)
@@ -84,6 +91,36 @@ func TestWindowsShortcutLeavesAnotherApplicationLinkUntouched(t *testing.T) {
 	after, err := os.ReadFile(shortcut)
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("another application's shortcut was changed: %v", err)
+	}
+}
+
+func TestWindowsShortcutUpdatesThePreviousExecutableIcon(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "download.exe")
+	writeShortcutTestFile(t, source, []byte("MZ executable fixture\n"))
+	result, err := createShortcutAt(source, root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// v0.1.1 used the installed executable itself as IconLocation, and skipped
+	// rewriting a link that already pointed to that executable.
+	if err := writeShellShortcut(result.Shortcut, result.Executable, result.Executable); err != nil {
+		t.Fatal(err)
+	}
+	before, err := readShellShortcut(result.Shortcut)
+	if err != nil || !shortcutPathsEqual(before.IconPath, result.Executable) {
+		t.Fatalf("pre-update shortcut: %#v (%v)", before, err)
+	}
+	if _, err := createShortcutAt(result.Executable, root, root); err != nil {
+		t.Fatal(err)
+	}
+	after, err := readShellShortcut(result.Shortcut)
+	if err != nil || !shortcutPathsEqual(after.Target, result.Executable) || shortcutPathsEqual(after.IconPath, before.IconPath) {
+		t.Fatalf("updated shortcut did not acquire a new icon path: %#v (%v)", after, err)
+	}
+	data, err := os.ReadFile(after.IconPath)
+	if err != nil || !bytes.Equal(data, branding.Icon) {
+		t.Fatalf("updated shortcut artwork: %v", err)
 	}
 }
 
