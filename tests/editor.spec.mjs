@@ -205,6 +205,21 @@ async function attachBuildFiles(testInfo, directory, prefix, recursive = false) 
   }
 }
 
+async function attachStoredUI(testInfo, directory, tokens) {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const content = await readFile(path.join(directory, entry.name), 'utf8');
+    await testInfo.attach(`ui-state-${entry.name}`, {
+      body: Buffer.from(tokens.reduce((text, token) => redactOutput(text, token), content)),
+      contentType: 'application/json',
+    });
+  }
+}
+
 async function recordEmptySyncTeX(testInfo, session, buildId, forward) {
   const result = { includedFile: forward, mainFile: null, cli: [] };
   result.mainFile = await json(session, '/api/synctex/forward', {
@@ -326,6 +341,7 @@ const test = base.extend({
         });
         await attachBuildFiles(testInfo, path.join(project, '.local-tex-editor', 'build'), 'tex');
         await attachBuildFiles(testInfo, path.join(temp, 'config', 'cache'), 'cache', true);
+        await attachStoredUI(testInfo, path.join(temp, 'config', 'ui-state'), tokens);
       }
       await rm(temp, { recursive: true, force: true, maxRetries: 6, retryDelay: 200 });
     }
@@ -509,6 +525,7 @@ test('長い原稿の中央への最後の入力をタブが閉じた後に草�
   const marker = '% 中央の目印';
   const finalInput = '最後の追記';
   const content = '% 長い日本語の原稿 <>& 😀\n'.repeat(6000) + marker + '\n' + '% 後半の本文\n'.repeat(6000);
+  const expected = content.replace(marker, marker + finalInput);
   expect(Buffer.byteLength(content)).toBeGreaterThan(300_000);
   // Use the browser's paste event so CodeMirror can insert the full document
   // in one transaction. Input.insertText uses the browser's editing path.
@@ -529,10 +546,6 @@ test('長い原稿の中央への最後の入力をタブが閉じた後に草�
   await page.getByTestId('source-search-input').press('Enter');
   await page.getByTestId('source-search-input').press('Escape');
   await page.keyboard.press('ArrowRight');
-  const patches = [];
-  page.on('request', request => {
-    if (new URL(request.url()).pathname === '/api/storage' && request.method() === 'PATCH') patches.push(request.postDataJSON());
-  });
   // Leave the ordinary full-draft write pending. The close-time request must
   // still reach the application after the document's JavaScript is gone.
   await page.evaluate(finalInput => {
@@ -545,16 +558,22 @@ test('長い原稿の中央への最後の入力をタブが閉じた後に草�
   await page.keyboard.insertText(finalInput);
   await closeEditorTab(page, true);
   await session.waitForExit();
-  const closingPatch = patches.find(item => item.key.startsWith('drafts:'));
-  expect(closingPatch).toBeTruthy();
-  expect(Buffer.byteLength(JSON.stringify(closingPatch))).toBeLessThan(60 * 1024);
+  // Inspect the PC copy before another browser tab or process can restore it.
+  // Events from a page's keepalive requests may arrive after Playwright has
+  // detached that page, so the saved content is the observable result here.
+  const storageDirectory = path.join(session.temp, 'config', 'ui-state');
+  const stored = await Promise.all((await readdir(storageDirectory)).filter(name => name.endsWith('.json'))
+    .map(async name => JSON.parse(await readFile(path.join(storageDirectory, name), 'utf8'))));
+  const storedDrafts = stored.find(record => record.key === `drafts:${current.project.root}`);
+  const writtenDraft = storedDrafts?.value?.entries?.find(entry => entry.path === 'main.tex');
+  expect(Boolean(writtenDraft), 'A draft must remain on the PC after the application exits.').toBe(true);
+  expect(writtenDraft.content === expected, 'The PC copy must contain the complete draft including the final input.').toBe(true);
   expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(original);
 
   await session.restart();
   const reopened = await context.newPage();
   await openEditor(reopened, session);
   await reopened.getByTestId('review-drafts').click();
-  const expected = content.replace(marker, marker + finalInput);
   await expect(reopened.locator('#recovery-draft')).toHaveValue(expected);
   await reopened.getByTestId('restore-draft').click();
   await expect(reopened.getByTestId('editor').locator('.cm-content')).toContainText(marker + finalInput);
