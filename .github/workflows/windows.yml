@@ -60,6 +60,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The Windows build failed.' }
           "LOCAL_TEX_EDITOR_TEST_EXE=$((Resolve-Path bin/local-tex-editor.exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Check the version of the Windows application
+        shell: pwsh
+        run: |
+          $expectedVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $application = (Resolve-Path 'bin/local-tex-editor.exe').Path
+          $process = Start-Process -FilePath $application -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput 'application-version.txt' -RedirectStandardError 'application-version-error.txt'
+          if ($process.ExitCode -ne 0) { throw 'The application could not report its version.' }
+          $actualVersion = (Get-Content 'application-version.txt' -Raw).Trim()
+          if ($actualVersion -ne $expectedVersion) { throw "The application reports $actualVersion, but the release is $expectedVersion." }
+          "Verified application version: $actualVersion"
+
       - name: Check the icons in the Windows application
         shell: pwsh
         run: |
@@ -97,6 +108,21 @@ jobs:
       - name: Install Chromium for browser tests
         run: npx playwright install chromium
 
+      - name: Download the previous release for the update test
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force test-previous | Out-Null
+          gh release download v0.1.2 --repo "$env:GITHUB_REPOSITORY" --pattern 'local-tex-editor-0.1.2-windows-x64.zip' --dir test-previous
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download the previous application for the update test.' }
+          $archive = 'test-previous/local-tex-editor-0.1.2-windows-x64.zip'
+          $expectedHash = 'f187c257880905d9c6592334f9fcc18302eef6c89bc2c7b5b4e7740c075430d1'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { throw 'The previous release archive did not match its recorded SHA-256.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath test-previous/application
+          "LOCAL_TEX_EDITOR_TEST_PREVIOUS_EXE=$((Resolve-Path test-previous/application/local-tex-editor.exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          'LOCAL_TEX_EDITOR_TEST_PREVIOUS_VERSION=0.1.2' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Test editing and compilation in the browser
         run: npm test
 
@@ -126,6 +152,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/windows | Out-Null
           Copy-Item bin/local-tex-editor.exe, README.md, LICENSE -Destination dist/windows
+          New-Item -ItemType Directory -Force dist/windows/docs/screenshots | Out-Null
+          Copy-Item docs/screenshots/editor-dark.png -Destination dist/windows/docs/screenshots
           Get-FileHash dist/windows/local-tex-editor.exe -Algorithm SHA256 | Format-List
           $size = (Get-Item dist/windows/local-tex-editor.exe).Length
           "Windows application: $size bytes" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

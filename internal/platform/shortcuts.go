@@ -44,6 +44,15 @@ func shortcutPathsEqual(first, second string) bool {
 	return filepath.Clean(first) == filepath.Clean(second)
 }
 
+func shortcutSameFile(first, second string) bool {
+	if shortcutPathsEqual(first, second) {
+		return true
+	}
+	firstInfo, firstErr := os.Stat(first)
+	secondInfo, secondErr := os.Stat(second)
+	return firstErr == nil && secondErr == nil && os.SameFile(firstInfo, secondInfo)
+}
+
 func shortcutInstallDirectory(localAppData string) (string, error) {
 	if !filepath.IsAbs(localAppData) {
 		return "", errors.New("アプリの保存先を取得できません．")
@@ -191,7 +200,7 @@ func installShortcutExecutable(source, directory string) (string, error) {
 			}
 		}
 		if err := commitShortcutFile(staged, target, exists); err != nil {
-			return "", fmt.Errorf("配置先のアプリを更新できません (%s)．起動中の Local TeX Editor を終了し，新しい実行ファイルを開いてから再度操作してください．%w (%v)", target, ErrShortcutConflict, err)
+			return "", fmt.Errorf("配置先のアプリを更新できません (%s)．起動中の Local TeX Editor を終了し，新しい実行ファイルを開いてから再度操作してください．%w (%w)", target, ErrShortcutConflict, err)
 		}
 	}
 	if manifest == nil || manifest.SHA256 != sourceHash {

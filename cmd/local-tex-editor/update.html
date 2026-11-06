@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Local TeX Editor の更新</title>
+  <style>
+    :root { color-scheme: light dark; font: 15px/1.65 system-ui, sans-serif; color: #20323b; background: #f3f6f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 40px 20px; }
+    main { max-width: 640px; margin: auto; padding: 28px; background: #fff; border: 1px solid #d7e1e5; border-radius: 12px; }
+    h1 { margin: 0 0 16px; font-size: 21px; line-height: 1.4; }
+    p { margin: 12px 0; }
+    dl { display: grid; grid-template-columns: 160px 1fr; gap: 8px; padding: 14px 16px; background: #f2f6f6; border-radius: 7px; }
+    dt { color: #53676f; } dd { margin: 0; font-weight: 650; }
+    code { font: 13px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
+    .path { padding: 10px 12px; border: 1px solid #d7e1e5; border-radius: 5px; }
+    .note { color: #53676f; font-size: 13px; }
+    a { color: #096f68; }
+    button, .button { display: inline-block; border: 1px solid #b6c7cc; border-radius: 6px; padding: 9px 13px; background: transparent; color: inherit; font: inherit; text-decoration: none; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    .primary { color: white; background: #0d766e; border-color: #0d766e; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    label { display: flex; gap: 9px; align-items: start; margin-top: 20px; }
+    input { margin-top: 7px; }
+    #update-status { padding: 10px 12px; border-left: 3px solid #0d766e; background: #eff7f4; }
+    #update-error { color: #a52632; }
+    [hidden] { display: none !important; }
+    @media (prefers-color-scheme: dark) {
+      :root { color: #dce8ec; background: #142029; } main { background: #1c2b35; border-color: #344854; }
+      dl { background: #18252d; } dt, .note { color: #a1b6c0; } a { color: #7dd7c8; }
+      .path, button, .button { border-color: #49606e; } #update-status { background: #193b37; border-color: #6dcab8; }
+      #update-error { color: #ffadb3; }
+    }
+  </style>
+  <script type="module" src="/update.js"></script>
+</head>
+<body>
+<main data-testid="version-update-page">
+  <h1>Local TeX Editor を更新</h1>
+  <dl>
+    <dt>起動中のバージョン</dt><dd id="update-current-version" data-testid="update-current-version">確認中…</dd>
+    <dt>今回開いたバージョン</dt><dd id="update-requested-version" data-testid="update-requested-version">確認中…</dd>
+  </dl>
+  <p id="update-status" data-testid="update-status" role="status">起動中のアプリを確認しています．</p>
+  <div id="update-options">
+    <p>起動中の編集画面で原稿を保存し，右上の終了ボタンを押すと，今回のバージョンへ切り替わります．</p>
+    <a id="update-open-current" data-testid="update-open-current" class="button" target="_blank" rel="noreferrer">起動中の編集画面を開く</a>
+    <p class="note">旧版のタブをすでに閉じた場合は，保存済みであることを下で確認して切り替えられます．実行中のコンパイルは停止します．</p>
+    <label><input type="checkbox" id="update-saved" data-testid="update-saved"><span>開いているすべての原稿を保存しました．</span></label>
+    <div class="actions">
+      <button id="update-stop-current" data-testid="update-stop-current" class="primary" disabled>旧版を終了して新版を開く</button>
+      <button id="update-cancel" data-testid="update-cancel">キャンセル</button>
+    </div>
+  </div>
+  <p id="update-error" role="alert" hidden></p>
+  <p class="note">今回開いた実行ファイル</p>
+  <p class="path"><code id="update-executable" data-testid="update-executable"></code></p>
+  <p class="note">ショートカットを作成済みの場合は，配置したアプリと既存のショートカットも更新します．</p>
+</main>
+</body>
+</html>

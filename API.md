@@ -4,7 +4,7 @@ Windows のブラウザでローカルの TeX プロジェクトを編集する�
 
 ## 共通の約束
 
-- API は JSON．PDF と画像のプレビューは各形式の bytes を返す．失敗は適切な HTTP status と `{ "error": "説明" }`．画面は HTTP の失敗とプロセスの失敗を表示する．
+- API は JSON．PDF と画像のプレビューは各形式の bytes を返し，`/api/session` は接続を続けるための stream を返す．失敗は適切な HTTP status と `{ "error": "説明" }`．画面は HTTP の失敗とプロセスの失敗を表示する．
 - API と PDF は `X-Local-Token` ヘッダーで起動時のランダムな token を受け取る．UI は起動 URL の `#token=...` を読み，sessionStorage に置き，URL の fragment を取り除く．Host と Origin も検査する．サーバーは loopback だけに bind する．
 - プロジェクトの操作には `X-Project-Root: encodeURIComponent(root)` を付ける．別のタブでプロジェクトが変わった場合は HTTP 409 を返す．
 - パスはプロジェクトからの相対パス．絶対パス，親への移動，symlink / reparse point によるプロジェクト外へのアクセスを拒否する．プロジェクトを開く操作ではユーザーが選んだ絶対パスを受け付ける．
@@ -16,8 +16,10 @@ Windows のブラウザでローカルの TeX プロジェクトを編集する�
 ### GET /api/state
 
 ```json
-{"version":"0.1.2","platform":"windows","shortcutsSupported":true,"texBin":"C:\\texlive\\2025\\bin\\windows","latexmk":"...","synctex":"...","synctexInstallCommands":[],"project":null,"recentProjects":[],"build":null}
+{"version":"0.1.3","executablePath":"C:\\Users\\user\\AppData\\Local\\Programs\\LocalTeXEditor\\local-tex-editor.exe","platform":"windows","shortcutsSupported":true,"texBin":"C:\\texlive\\2025\\bin\\windows","latexmk":"...","synctex":"...","synctexInstallCommands":[],"project":null,"recentProjects":[],"build":null}
 ```
+
+`executablePath` は動いている実行ファイルの絶対パス．配置済みのアプリやショートカットの更新が失敗した場合は，`installationError` も返す．画面にはアプリのバージョンとパス，更新に失敗した際の案内を表示する．
 
 synctex は利用できる実行ファイルのパス．見つからない場合は空文字列と synctexError の説明を返す．Windows で TeX Live の管理ツールと年版が確認できた場合は，設定画面に表示する PowerShell のコマンドを synctexInstallCommands へ入れる．
 
@@ -121,6 +123,14 @@ CLI の形式と座標は TeX Live の [synctex_main.c](https://github.com/TeX-L
 
 [texmfmp.c](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/lib/texmfmp.c) の `generic_synctex_get_current_name` は相対名へ working directory を前置するため，Input に `..././原稿.tex` が記録される．Windows では working directory が 8.3 形式になる場合もあるため，`GetShortPathNameW` で取得したプロジェクトのパスも照合の候補に加える．照合では文字コードを復元した後に `/./` 等を整理する．CP932 の後半 byte にある `0x5c` をパスの区切りとして扱わない．
 
+### GET /api/session
+
+編集タブごとに認証付きの `fetch` で開く．応答は `text/event-stream` とし，開始時と 15 秒ごとにコメントを送る．タブが閉じると HTTP の接続が切れ，最後の接続から 5 秒経過した時点でコンパイルとアプリを終了する．その間にページの再読み込み等で接続が戻ると，終了の予定を取り消す．
+
+`beforeunload` の確認を取り消した場合や，タブが背景へ移った場合は接続を続ける．`pagehide` で接続を閉じ，`pageshow` で再開する．接続の一時的なエラーでも再接続を試みる．通常の `--no-browser` で起動し，一度もこの API を利用していないプロセスには，自動終了の期限を設けない．
+
+通常の GUI 起動と旧版からの移行では，初回の編集画面の接続を 30 秒待つ．画面が開かれる前にタブを閉じた場合も，その期限でアプリが終了する．一度接続した後は，最後のタブの切断から 5 秒という上記の動作へ進む．
+
 ### POST /api/shutdown
 
 コンパイルを停止し，`{"ok":true}` を返してサーバーを終了する．UI は未保存の編集がある場合に確認し，保存または草稿の記録を済ませてから呼ぶ．成功後に `window.close()` を呼び，ブラウザがタブを残した場合は終了画面へ切り替える．
@@ -133,13 +143,29 @@ Windows で起動用のショートカットを作成する．入力は `{ "dest
 
 ショートカットのアイコンはアプリの設置先に保存する．ファイル名に画像の SHA-256 の先頭 16 桁を含め，画像が更新された際に Explorer が新しい画像を読み込めるようにする．既存のアプリ用ショートカットも再作成し，専用アイコンへ更新する．
 
+通常の GUI 起動でも，アプリのロックを取得した後に配置済みのアプリと作成済みのショートカットを更新する．起動時の更新は既存の `installation.json` を確認してから行う．ポータブル版の初回起動ではインストール先やショートカットを作らない．
+
 ### GET /api/storage?key=文字列
 
-UI の設定や草稿を `{ "value":... }` として読み込む．未登録の場合は `{ "value":null }`．キーはパスとして扱わず，SHA-256 をファイル名にして設定フォルダーの `ui-state` に保存する．アプリの次回起動で localhost のポートが変わっても，同じキーから読み込める．
+UI の設定や草稿を `{ "value":..., "serialized":"JSON の文字列", "revision":"sha256" }` として読み込む．`revision` は `serialized` の UTF-8 bytes の SHA-256．未登録の場合は `{ "value":null, "serialized":"", "revision":"" }`．キーはパスとして扱わず，SHA-256 をファイル名にして設定フォルダーの `ui-state` に保存する．アプリの次回起動で localhost のポートが変わっても，同じキーから読み込める．
 
 ### PUT /api/storage
 
-入力 `{ "key":"文字列", "value":... }`．JSON の上限は 16 MiB．同じフォルダーの一時ファイルに書き込み，完成した内容で置き換える．token，Origin，Host の確認は他の API と共通．`X-Project-Root` は参照しないため，プロジェクトを切り替えた直後も元のプロジェクトのキーへ草稿を保存できる．
+入力 `{ "key":"文字列", "value":..., "baseRevision":"読込時の revision" }`．`baseRevision` を指定した場合，現在の値と一致するときに書き込む．古い revision には HTTP 409 と現在の値を返す．成功時の形式は GET と同じ．JSON の上限は 16 MiB．同じフォルダーの一時ファイルに書き込み，完成した内容で置き換える．token，Origin，Host の確認は他の API と共通．`X-Project-Root` は参照しないため，プロジェクトを切り替えた直後も元のプロジェクトのキーへ草稿を保存できる．
+
+### PATCH /api/storage
+
+タブを閉じる際の小さな変更は，`fetch` の `keepalive` を使って送信する．長い原稿の全文がブラウザの送信サイズを超える場合にも，変更した部分だけを送れる．
+
+```json
+{"key":"drafts:...","patches":[{"baseRevision":"sha256","prefixBytes":100,"suffixBytes":200,"insert":"変更後の文字列"}]}
+```
+
+`prefixBytes` と `suffixBytes` は，保存済みの `serialized` の先頭と末尾から引き続き使う UTF-8 bytes の数．その間へ `insert` を入れて JSON を復元する．複数の箇所を更新する場合は，候補の `edits` 配列へ `{ "prefixBytes":..., "suffixBytes":..., "insert":"..." }` を入れる．各範囲は同じ元の文字列を参照する．本文，更新日時，選択位置の変更をそれぞれ送れるため，離れた箇所が変わっても原稿全体の送信を必要としない．原稿の改行や日本語を含む文字列にも使える．UTF-8 の文字の途中を指定した場合，範囲が重なる場合，不正な JSON になる変更は HTTP 400．
+
+`patches` には最大 2 個の候補を送れる．通常の PUT の応答をまだ受け取っていない場合に，最後に確認した revision と送信中の値に対応する revision を指定する．サーバーは現在の revision に一致する候補を使う．一致する候補がなければ HTTP 409 と現在の値を返す．後から到着した古い PUT も `baseRevision` の照合によって HTTP 409 となる．
+
+UI は草稿の書込みにこの照合を使う．別のタブの草稿と競合した場合は自動の再送を止め，利用者の「再保存」で再開する．編集位置と表示設定は通常の PUT で最後の値を保存し，閉じる直前も送信量の範囲内で全文を送る．
 
 ### DELETE /api/storage?key=文字列
 
@@ -150,7 +176,8 @@ UI の設定や草稿を `{ "value":... }` として読み込む．未登録の�
 - `--project PATH`，`--tex-bin PATH`，`--listen 127.0.0.1:0`，`--no-browser`，`--ready-file PATH`，`--config-dir PATH`．
 - ready-file へ `{ "url": "http://127.0.0.1:port/", "token": "...", "pid": 123 }` を書く．同じ JSON を標準出力にも出す．
 - 設定は OS のユーザー用設定フォルダーへ保存する．--config-dir はテスト用にも利用する．
-- 同じ設定フォルダーで起動済みの場合，通常の起動は既存の画面を開く．コンパイルにはプロジェクトごとのロックを使い，異なる設定フォルダーからの同時起動でも生成物の競合を防ぐ．
+- 同じ設定フォルダーで同じバージョンが起動済みの場合，通常の起動は既存の画面を開く．異なるバージョンが動いている場合は，それぞれの版を示す画面を開き，旧版の終了後に新しいプロセスがアプリのロックを取得する．コンパイルにはプロジェクトごとのロックを使い，異なる設定フォルダーからの同時起動でも生成物の競合を防ぐ．
+- `--no-browser` と `--ready-file` を同時に指定した場合は，異なるバージョンが起動中でも，移行画面をブラウザで開かずに準備する．この段階の ready-file には `phase: "update"` を加える．通常の編集サーバーを起動すると，同じファイルをその接続情報で更新する．
 - 起動時に main.tex を優先して候補を選ぶが，UI から選択を変更できる．
 - Compile はプロジェクトのルートを working directory にして latexmk を実行する．既存の latexmkrc / .latexmkrc を使う．出力先は `-outdir=.local-tex-editor/build` とする．CLI に jobname の強制指定をしない．出力は main に対応する fls / fdb_latexmk と実際の PDF から見つけ，latexmk が成功したことを確かめる．
 - 根拠のない No PDF を避けるため，実行の失敗，終了コード，PDF 探索結果を必ず build.error か build.log へ記す．

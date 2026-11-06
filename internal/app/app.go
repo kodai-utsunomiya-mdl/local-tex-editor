@@ -24,12 +24,13 @@ import (
 const maxTextSize = 8 << 20
 
 type Options struct {
-	ConfigDir   string
-	ProjectPath string
-	TexBin      string
-	Token       string
-	Version     string
-	Shutdown    func()
+	ConfigDir         string
+	ProjectPath       string
+	TexBin            string
+	Token             string
+	Version           string
+	InstallationError string
+	Shutdown          func()
 }
 
 type App struct {
@@ -44,6 +45,7 @@ type App struct {
 	build           *buildRun
 	address         string
 	closed          bool
+	shutdownOnce    sync.Once
 	workers         sync.WaitGroup
 	lastPDF         string
 	lastPDFID       string
@@ -51,10 +53,19 @@ type App struct {
 	pdfOrder        []string
 	synctexVersions map[string]*synctexVersion
 	synctexSlots    chan struct{}
+
+	browserConnections   int
+	browserEverConnected bool
+	browserGeneration    uint64
+	browserTimer         *time.Timer
+	browserEnd           chan struct{}
+	browserCloseDelay    time.Duration
 }
 
 type State struct {
 	Version                string   `json:"version"`
+	ExecutablePath         string   `json:"executablePath"`
+	InstallationError      string   `json:"installationError,omitempty"`
 	Platform               string   `json:"platform"`
 	TexBin                 string   `json:"texBin"`
 	Latexmk                string   `json:"latexmk"`
@@ -98,7 +109,11 @@ func New(options Options) (*App, error) {
 	if err := os.MkdirAll(options.ConfigDir, 0700); err != nil {
 		return nil, fmt.Errorf("設定フォルダーを作成できません: %w", err)
 	}
-	a := &App{options: options, pdfVersions: make(map[string]string), synctexVersions: make(map[string]*synctexVersion), synctexSlots: make(chan struct{}, 2)}
+	a := &App{
+		options: options, pdfVersions: make(map[string]string),
+		synctexVersions: make(map[string]*synctexVersion), synctexSlots: make(chan struct{}, 2),
+		browserEnd: make(chan struct{}), browserCloseDelay: 5 * time.Second,
+	}
 	if err := a.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -126,9 +141,7 @@ func (a *App) SetAddress(address string) {
 }
 
 func (a *App) Close() error {
-	a.mu.Lock()
-	a.closed = true
-	a.mu.Unlock()
+	a.CloseBrowserSessions()
 	platform.CancelFolderPicker()
 	_ = a.stopBuild()
 	done := make(chan struct{})
@@ -144,6 +157,7 @@ func (a *App) Close() error {
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", a.stateHandler)
+	mux.HandleFunc("/api/session", a.browserSessionHandler)
 	mux.HandleFunc("/api/project/open", a.openHandler)
 	mux.HandleFunc("/api/project/pick", a.pickHandler)
 	mux.HandleFunc("/api/settings", a.settingsHandler)
@@ -251,8 +265,13 @@ func (a *App) stateLocked(refresh bool) State {
 			a.project.Directories = directories
 		}
 	}
+	executable, _ := os.Executable()
+	if executable != "" {
+		executable, _ = filepath.Abs(executable)
+	}
 	result := State{
 		Version: a.options.Version, Platform: runtime.GOOS,
+		ExecutablePath: executable, InstallationError: a.options.InstallationError,
 		ShortcutsSupported: runtime.GOOS == "windows",
 		TexBin:             a.config.TexBin, RecentProjects: append([]string{}, a.config.RecentProjects...),
 		Build: a.buildSnapshotLocked(),
@@ -472,12 +491,10 @@ func (a *App) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = a.stopBuild()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	if a.options.Shutdown != nil {
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			a.options.Shutdown()
-		}()
-	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		a.requestShutdown()
+	}()
 }
 
 func (a *App) checkProjectLocked(expected string) error {

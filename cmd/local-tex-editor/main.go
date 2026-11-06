@@ -21,7 +21,7 @@ import (
 	"github.com/kodai-utsunomiya-mdl/local-tex-editor/web"
 )
 
-var version = "0.1.2"
+var version = "0.1.3"
 var noBrowser bool
 
 func main() {
@@ -68,14 +68,25 @@ func run() error {
 	if err = os.MkdirAll(*configDir, 0700); err != nil {
 		return err
 	}
-	releaseInstance, err := platform.AcquireAppLock(*configDir)
+	runContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignals()
+	releaseInstance, update, err := acquireStartupInstance(runContext, *configDir, *readyFile, noBrowser, platform.OpenBrowser)
 	if err != nil {
-		if errors.Is(err, platform.ErrLocked) && !noBrowser {
-			return reopenExisting(*configDir)
-		}
 		return fmt.Errorf("アプリを起動できません: %w", err)
 	}
+	if releaseInstance == nil {
+		return nil
+	}
 	defer releaseInstance()
+	if update != nil {
+		defer update.Close()
+	}
+	installationError := ""
+	if !noBrowser {
+		if err := platform.RefreshInstalledShortcuts(); err != nil {
+			installationError = err.Error()
+		}
+	}
 	listener, err := net.ListenTCP("tcp", address)
 	if err != nil {
 		return fmt.Errorf("could not start the local server: %w", err)
@@ -89,7 +100,7 @@ func run() error {
 	quit := make(chan struct{})
 	var stopOnce sync.Once
 	stop := func() { stopOnce.Do(func() { close(quit) }) }
-	application, err := app.New(app.Options{ConfigDir: *configDir, ProjectPath: *project, TexBin: *texBin, Token: token, Version: version, Shutdown: stop})
+	application, err := app.New(app.Options{ConfigDir: *configDir, ProjectPath: *project, TexBin: *texBin, Token: token, Version: version, Shutdown: stop, InstallationError: installationError})
 	if err != nil {
 		return err
 	}
@@ -120,17 +131,21 @@ func run() error {
 	fmt.Println(string(data))
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- server.Serve(listener) }()
-	if !noBrowser {
+	if update != nil || !noBrowser {
+		application.ExpectBrowserConnection(30 * time.Second)
+	}
+	if update != nil {
+		if !update.Complete(url + "#token=" + token) {
+			return nil
+		}
+	} else if !noBrowser {
 		if err = platform.OpenBrowser(url + "#token=" + token); err != nil {
 			return err
 		}
 	}
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-	defer signal.Stop(interrupt)
 	select {
 	case <-quit:
-	case <-interrupt:
+	case <-runContext.Done():
 	case err = <-serveResult:
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
@@ -138,5 +153,6 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	application.CloseBrowserSessions()
 	return server.Shutdown(ctx)
 }

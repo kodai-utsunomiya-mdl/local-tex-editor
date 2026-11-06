@@ -249,6 +249,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .shortcut-paths > div { margin-top: 7px; }
 .shortcut-paths dt { color: var(--secondary); }
 .shortcut-paths dd { margin: 3px 0 0; color: var(--muted); overflow-wrap: anywhere; user-select: text; }
+.application-details { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.application-details dl { margin: 0; font-size: 11px; line-height: 1.7; }
+.application-details dl > div + div { margin-top: 8px; }
+.application-details dt { color: var(--secondary); }
+.application-details dd { margin: 3px 0 0; color: var(--text); overflow-wrap: anywhere; user-select: text; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 30px; }
 .dialog-actions .button { padding: 9px 15px; }
 .dialog-recent { margin-top: 21px; padding-top: 16px; border-top: 1px solid var(--border); }

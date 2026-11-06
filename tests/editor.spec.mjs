@@ -13,6 +13,7 @@ const fixture = path.join(import.meta.dirname, 'fixtures', 'japanese');
 const executable = path.resolve(process.env.LOCAL_TEX_EDITOR_TEST_EXE ||
   path.join(repository, 'bin', process.platform === 'win32' ? 'local-tex-editor.exe' : 'local-tex-editor'));
 const execFileAsync = promisify(execFile);
+const applicationVersion = JSON.parse(await readFile(path.join(repository, 'package.json'), 'utf8')).version;
 
 function exampleFigurePDF() {
   const content = 'BT /F1 18 Tf 30 100 Td (Figure PDF) Tj ET\n';
@@ -132,6 +133,21 @@ async function json(session, endpoint, options) {
 
 async function openProject(session) {
   return json(session, '/api/project/open', { method: 'POST', data: { path: session.project } });
+}
+
+async function openEditor(page, session) {
+  const connected = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/session' && response.status() === 200);
+  await page.goto(`${session.url}#token=${encodeURIComponent(session.token)}`);
+  await connected;
+  await expect(page.getByTestId('editor').locator('.cm-content')).toBeVisible();
+}
+
+async function closeEditorTab(page, acceptUnsaved = false) {
+  if (acceptUnsaved) page.once('dialog', dialog => dialog.accept());
+  const closed = page.waitForEvent('close');
+  await page.close({ runBeforeUnload: true });
+  await closed;
 }
 
 async function buildFinished(session, id) {
@@ -291,6 +307,15 @@ const test = base.extend({
         await stop();
         Object.assign(session, await start());
       };
+      session.isRunning = () => processHandle.exitCode === null && processHandle.signalCode === null;
+      session.waitForExit = async () => {
+        await expect.poll(() => processHandle.exitCode, { timeout: 15_000 }).toBe(0);
+        expect(processHandle.signalCode).toBeNull();
+        await expect.poll(() => stat(readyFile).then(() => true, error => {
+          if (error.code === 'ENOENT') return false;
+          throw error;
+        })).toBe(false);
+      };
       await use(session);
     } finally {
       await stop();
@@ -315,6 +340,219 @@ test('起動時のエラーを無人実行でも受け取れる', async () => {
   expect(result.code).toBe(1);
   expect(Boolean(result.killed)).toBe(false);
   expect(result.stderr).toContain('loopback');
+});
+
+test('起動中の版と実行ファイルを表示し，最後のタブを閉じるとアプリが終了する', async ({ page, session }) => {
+  await openProject(session);
+  await openEditor(page, session);
+  const meta = await json(session, '/api/state');
+  expect(meta.version).toBe(applicationVersion);
+  await expect(page.locator('#app-version')).toHaveText(`v${applicationVersion}`);
+  await page.getByTestId('settings-button').click();
+  await expect(page.locator('#application-version')).toHaveText(`v${applicationVersion}`);
+  await expect(page.locator('#application-executable')).toHaveText(meta.executablePath);
+  expect(path.resolve(meta.executablePath)).toBe(executable);
+  await page.keyboard.press('Escape');
+  await closeEditorTab(page);
+  await session.waitForExit();
+});
+
+test('重い読み込みを待つ再読み込みでも接続し直し，編集を続けられる', async ({ page, session }) => {
+  await openProject(session);
+  await openEditor(page, session);
+  await page.route(url => url.pathname === '/api/state', async route => {
+    await delay(6500);
+    await route.continue();
+  }, { times: 1 });
+  const connected = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/session' && response.status() === 200);
+  await page.reload();
+  await connected;
+  // This exceeds the interval used to close an application with no tabs.
+  await delay(5600);
+  expect(session.isRunning()).toBe(true);
+  await expect(page.getByTestId('editor').locator('.cm-content')).toBeVisible();
+  const content = '% 再読み込み後も編集して保存できる\n';
+  await replaceEditor(page, content);
+  await page.keyboard.press('Control+S');
+  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(expectedMainContent(session, content));
+});
+
+test('二つのタブのうち一方を閉じても動き続け，最後のタブを閉じると終了する', async ({ page, context, session }) => {
+  await openProject(session);
+  await openEditor(page, session);
+  const second = await context.newPage();
+  await openEditor(second, session);
+  await closeEditorTab(page);
+  await delay(5600);
+  expect(session.isRunning()).toBe(true);
+  expect((await json(session, '/api/state')).version).toBe(applicationVersion);
+  await expect(second.getByTestId('editor').locator('.cm-content')).toBeVisible();
+  await closeEditorTab(second);
+  await session.waitForExit();
+});
+
+test('タブを閉じる確認を取り消すと，接続したまま原稿を編集できる', async ({ page, session }) => {
+  await openProject(session);
+  await openEditor(page, session);
+  await setAutoSave(page, false);
+  const content = '% タブを閉じる操作を取り消す\n';
+  await replaceEditor(page, content);
+  const prompted = page.waitForEvent('dialog');
+  const closing = page.close({ runBeforeUnload: true });
+  const dialog = await prompted;
+  expect(dialog.type()).toBe('beforeunload');
+  await dialog.dismiss();
+  await closing;
+  await delay(5600);
+  expect(page.isClosed()).toBe(false);
+  expect(session.isRunning()).toBe(true);
+  const editor = page.getByTestId('editor').locator('.cm-content');
+  await editor.click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.insertText('% 取消後の入力\n');
+  await page.keyboard.press('Control+S');
+  await expect.poll(() => readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(expectedMainContent(session, content + '% 取消後の入力\n'));
+  await closeEditorTab(page);
+  await session.waitForExit();
+});
+
+test('配布済みの古い版から保存を確認して更新し，新しい版の編集画面を開く', async ({ page, context }, testInfo) => {
+  const previousExecutable = process.env.LOCAL_TEX_EDITOR_TEST_PREVIOUS_EXE;
+  test.skip(!previousExecutable, 'Set LOCAL_TEX_EDITOR_TEST_PREVIOUS_EXE to exercise the published application.');
+  const previousVersion = process.env.LOCAL_TEX_EDITOR_TEST_PREVIOUS_VERSION || '0.1.2';
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'ltex-update-'));
+  const project = path.join(temp, '保存する日本語の原稿');
+  await cp(fixture, project, { recursive: true });
+  const config = path.join(temp, 'config');
+  const currentReady = path.join(temp, 'current-ready.json');
+  const nextReady = path.join(temp, 'next-ready.json');
+  const children = [];
+  const connections = [];
+  const output = [];
+  async function launch(program, readyFile) {
+    const args = ['--no-browser', '--ready-file', readyFile, '--config-dir', config];
+    if (process.env.LOCAL_TEX_EDITOR_TEST_TEX_BIN) args.push('--tex-bin', process.env.LOCAL_TEX_EDITOR_TEST_TEX_BIN);
+    const child = spawn(program, args, { cwd: repository, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    children.push(child);
+    let failure;
+    child.on('error', error => { failure = error; });
+    child.stdout.on('data', chunk => output.push(chunk.toString('utf8')));
+    child.stderr.on('data', chunk => output.push(chunk.toString('utf8')));
+    const ready = await waitUntil(async () => {
+      if (failure) throw failure;
+      if (child.exitCode !== null) throw new Error(`Application exited with code ${child.exitCode}.`);
+      return readFile(readyFile, 'utf8').then(JSON.parse, error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      }).catch(error => { if (error instanceof SyntaxError) return null; throw error; });
+    }, value => Boolean(value?.url && value?.token), 20_000, 'The application did not open its update page.');
+    connections.push(ready);
+    return { child, ready };
+  }
+  try {
+    const previous = await launch(previousExecutable, currentReady);
+    await openProject({ ...previous.ready, project });
+    await page.goto(`${previous.ready.url}#token=${encodeURIComponent(previous.ready.token)}`);
+    await expect(page.locator('#app-version')).toHaveText(`v${previousVersion}`);
+    await setAutoSave(page, false);
+    const saved = '% 新しい版へ移る前に保存する\n';
+    await replaceEditor(page, saved);
+
+    const next = await launch(executable, nextReady);
+    expect(next.ready.phase).toBe('update');
+    const updating = await context.newPage();
+    await updating.goto(`${next.ready.url}#token=${encodeURIComponent(next.ready.token)}`);
+    await expect(updating.getByTestId('update-current-version')).toHaveText(`v${previousVersion}`);
+    await expect(updating.getByTestId('update-requested-version')).toHaveText(`v${applicationVersion}`);
+    await expect(updating.getByTestId('update-executable')).toHaveText(executable);
+    await expect(updating.getByTestId('update-stop-current')).toBeDisabled();
+    expect(previous.child.exitCode).toBeNull();
+    await expect(page.getByTestId('editor').locator('.cm-content')).toContainText(saved.trim());
+
+    await page.getByTestId('save-button').click();
+    await expect.poll(() => readFile(path.join(project, 'main.tex'), 'utf8').then(text => text.replaceAll('\r\n', '\n'))).toBe(saved);
+    await updating.getByTestId('update-saved').check();
+    await updating.getByTestId('update-stop-current').click();
+    await expect.poll(() => previous.child.exitCode).toBe(0);
+    const started = await waitUntil(() => readFile(nextReady, 'utf8').then(JSON.parse),
+      value => value?.url && value.phase !== 'update', 20_000, 'The new application did not replace the update page.');
+    connections.push(started);
+    await expect(updating.locator('#app-version')).toHaveText(`v${applicationVersion}`);
+    await expect(updating.getByTestId('editor').locator('.cm-content')).toContainText(saved.trim());
+    expect((await json(started, '/api/state')).version).toBe(applicationVersion);
+    await page.close();
+    await closeEditorTab(updating);
+    await expect.poll(() => next.child.exitCode, { timeout: 15_000 }).toBe(0);
+  } finally {
+    for (const connection of connections.toReversed()) {
+      await request(connection, connection.phase === 'update' ? '/api/update/cancel' : '/api/shutdown', { method: 'POST', data: {} }).catch(() => {});
+    }
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) await Promise.race([once(child, 'exit'), delay(4000)]);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+    if (testInfo.status !== testInfo.expectedStatus) {
+      await testInfo.attach('application-update-output.txt', {
+        body: Buffer.from(connections.reduce((text, entry) => redactOutput(text, entry.token), output.join('\n'))), contentType: 'text/plain',
+      });
+    }
+    await rm(temp, { recursive: true, force: true, maxRetries: 6, retryDelay: 200 });
+  }
+});
+
+test('長い原稿の中央への最後の入力をタブが閉じた後に草稿から戻す', async ({ page, context, session }) => {
+  await openProject(session);
+  await openEditor(page, session);
+  await setAutoSave(page, false);
+  const original = await readFile(path.join(session.project, 'main.tex'), 'utf8');
+  const marker = '% 中央の目印';
+  const finalInput = '最後の追記';
+  const content = '% 長い日本語の原稿 <>& 😀\n'.repeat(6000) + marker + '\n' + '% 後半の本文\n'.repeat(6000);
+  expect(Buffer.byteLength(content)).toBeGreaterThan(300_000);
+  await replaceEditor(page, content);
+  const current = await json(session, '/api/state');
+  const storageURL = `/api/storage?${new URLSearchParams({ key: `drafts:${current.project.root}` })}`;
+  await expect.poll(async () => {
+    const stored = await json(session, storageURL);
+    return stored.value?.entries?.some(entry => entry.content === content) || false;
+  }).toBe(true);
+  await expect(page.getByTestId('draft-status')).toHaveAttribute('data-status', 'saved');
+  await page.locator('#find-button').click();
+  await page.getByTestId('source-search-input').fill(marker);
+  await page.getByTestId('source-search-input').press('Enter');
+  await page.getByTestId('source-search-input').press('Escape');
+  await page.keyboard.press('ArrowRight');
+  const patches = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/storage' && request.method() === 'PATCH') patches.push(request.postDataJSON());
+  });
+  // Leave the ordinary full-draft write pending. The close-time request must
+  // still reach the application after the document's JavaScript is gone.
+  await page.evaluate(finalInput => {
+    const request = window.fetch.bind(window);
+    window.fetch = (url, options) => {
+      if (String(url) === '/api/storage' && options?.method === 'PUT' && options.body?.includes(finalInput)) return new Promise(() => {});
+      return request(url, options);
+    };
+  }, finalInput);
+  await page.keyboard.insertText(finalInput);
+  await closeEditorTab(page, true);
+  await session.waitForExit();
+  const closingPatch = patches.find(item => item.key.startsWith('drafts:'));
+  expect(closingPatch).toBeTruthy();
+  expect(Buffer.byteLength(JSON.stringify(closingPatch))).toBeLessThan(60 * 1024);
+  expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(original);
+
+  await session.restart();
+  const reopened = await context.newPage();
+  await openEditor(reopened, session);
+  await reopened.getByTestId('review-drafts').click();
+  const expected = content.replace(marker, marker + finalInput);
+  await expect(reopened.locator('#recovery-draft')).toHaveValue(expected);
+  await reopened.getByTestId('restore-draft').click();
+  await expect(reopened.getByTestId('editor').locator('.cm-content')).toContainText(marker + finalInput);
+  expect(await readFile(path.join(session.project, 'main.tex'), 'utf8')).toBe(original);
 });
 
 test('終了を取り消して編集を続け，保存してからタブを閉じる', async ({ page, session }) => {

@@ -11,6 +11,7 @@ import { sourceSearch, openSourceSearchPanel } from './source-search.js';
 import { attachEditorZoom, prepareEditorResize } from './editor-zoom.js';
 import { tags } from '@lezer/highlight';
 import { SessionStore } from './session-store.js';
+import { BrowserSession } from './browser-session.js';
 import { extractTexMetadata, extractCitations, texCompletionSource, extractLogLocations } from './tex-tools.js';
 
 const $ = id => document.getElementById(id);
@@ -97,7 +98,7 @@ const darkHighlight = HighlightStyle.define([
 ]);
 
 class APIError extends Error {
-  constructor(message, status = 0) { super(message); this.name = 'APIError'; this.status = status; }
+  constructor(message, status = 0, data = null) { super(message); this.name = 'APIError'; this.status = status; this.data = data; }
 }
 
 function setConnected(connected) {
@@ -108,7 +109,7 @@ function setConnected(connected) {
   label.textContent = state.closed ? 'アプリを終了しました' : connected ? 'この PC に接続済み' : '接続を確認してください';
 }
 
-async function api(path, { method = 'GET', body, timeout = 15000, projectRoot = state.meta?.project?.root, signal } = {}) {
+async function api(path, { method = 'GET', body, timeout = 15000, projectRoot = state.meta?.project?.root, signal, keepalive = false } = {}) {
   if (state.closed) throw new Error('アプリは終了しています．実行ファイルから開き直してください．');
   if (!token) throw new APIError('接続に必要な情報が見つかりません．アプリの実行ファイルを起動して開いたページを使用してください．', 401);
   const headers = { 'X-Local-Token': token, Accept: 'application/json' };
@@ -119,12 +120,12 @@ async function api(path, { method = 'GET', body, timeout = 15000, projectRoot = 
   if (signal?.aborted) cancel(); else signal?.addEventListener('abort', cancel, { once: true });
   const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
   try {
-    const response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', signal: controller.signal });
+    const response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', signal: controller.signal, keepalive });
     const text = await response.text();
     let data;
     try { data = text ? JSON.parse(text) : null; }
     catch { throw new APIError(`応答を読み取れませんでした (HTTP ${response.status})．${text.slice(0, 500)}`, response.status); }
-    if (!response.ok) throw new APIError(data?.error || `処理に失敗しました (HTTP ${response.status})．`, response.status);
+    if (!response.ok) throw new APIError(data?.error || `処理に失敗しました (HTTP ${response.status})．`, response.status, data);
     setConnected(true);
     return data;
   } catch (error) {
@@ -647,7 +648,7 @@ async function applyMeta(meta, resetProject = false) {
   $('project-name').textContent = project ? basename(project.root) : 'Local TeX Editor';
   $('project-name').title = project?.root || '';
   $('project-root').textContent = project?.root || ''; $('project-root').title = project?.root || '';
-  $('app-version').textContent = meta.version ? `v${meta.version}` : '';
+  updateApplicationDetails(meta);
   $('main-document-label').textContent = project ? `${project.main || 'メイン文書を選択'} · ${modeLabels[project.mode] || project.mode}` : 'メイン文書を選択';
   renderRecent(); renderTree(); renderTabs(); renderControls(); updateCursor(); renderOutline(); renderRecovery();
   applyBuild(meta.build);
@@ -722,10 +723,16 @@ function renderToolStatus() {
   $('synctex-setup').hidden = !synctexCommands.length;
   $('synctex-install-commands').textContent = synctexCommands.join('\n');
 }
+function updateApplicationDetails(meta) {
+  $('app-version').textContent = meta.version ? `v${meta.version}` : '';
+  $('application-version').textContent = meta.version ? `v${meta.version}` : '';
+  $('application-executable').textContent = meta.executablePath || '';
+}
 function updateTools(meta) {
   if (!state.meta) return;
   for (const key of ['texBin', 'latexmk', 'toolError', 'synctex', 'synctexError']) state.meta[key] = meta[key] || '';
   state.meta.synctexInstallCommands = meta.synctexInstallCommands || [];
+  updateApplicationDetails(meta);
   if ($('settings-dialog').open) renderToolStatus();
   renderControls();
 }
@@ -1004,6 +1011,7 @@ async function shutdown() {
     syncDrafts(); persistSession(); await sessionStore.flush();
     await api('/api/shutdown', { method: 'POST', body: {}, timeout: 30000 });
     state.closed = true; ++state.projectGeneration; ++state.openSequence;
+    browserSession.stop();
     for (const timer of [state.pollTimer, state.autoSaveTimer, state.draftTimer, state.sessionTimer, state.outlineTimer, toastTimer, lineFlashTimer]) clearTimeout(timer);
     clearInterval(state.heartbeat); state.build = null; setConnected(false);
     try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* No persistent storage is required. */ }
@@ -1027,9 +1035,10 @@ const sessionStore = new SessionStore(api, (status, key, error) => {
   }
   if (error) {
     const item = key.startsWith('drafts:') ? '草稿' : key.startsWith('session:') ? '編集位置' : '設定';
-    showError(new Error(`${item}を記録できませんでした．${error.message || error}`), { label: '再保存', run: () => sessionStore.flush() });
+    showError(new Error(`${item}を記録できませんでした．${error.message || error}`), { label: '再保存', run: () => sessionStore.flush({ retryConflicts: true }) });
   }
 });
+const browserSession = new BrowserSession({ token, onConnectionChange: connected => { if (!state.closed) setConnected(connected); } });
 
 function themeExtension() {
   const dark = state.theme === 'dark';
@@ -1476,6 +1485,16 @@ window.addEventListener('beforeunload', event => {
   syncDrafts(); persistSession(); sessionStore.flush().catch(() => {});
   if (dirtyDocuments().length || [...state.documents.values()].some(doc => doc.saving)) { event.preventDefault(); event.returnValue = ''; }
 });
+window.addEventListener('pagehide', () => {
+  if (state.closed) return;
+  syncDrafts(); persistSession(); sessionStore.flushOnHide();
+  browserSession.stop();
+});
+window.addEventListener('pageshow', () => {
+  if (state.closed) return;
+  browserSession.start();
+  runTask(() => sessionStore.resume());
+});
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { runTask(heartbeat); scheduleAutoSave(); }
   else { syncDrafts(); persistSession(); sessionStore.flush().catch(() => {}); }
@@ -1488,8 +1507,10 @@ async function initialise() {
     const meta = await api('/api/state');
     await loadPreferences();
     await applyMeta(meta, true);
+    if (meta.installationError) showError(new Error(meta.installationError));
     state.heartbeat = setInterval(() => runTask(heartbeat), 30000);
   } catch (error) { showError(error); }
   finally { setOperation(''); runTask(openInitialFile); }
 }
+browserSession.start();
 initialise();

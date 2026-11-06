@@ -5,6 +5,7 @@ web/dist/*
 /dist/
 playwright-report/
 test-results/
+/test-previous/
 *.log
 *.exe
 *.syso

@@ -83,7 +83,7 @@ func createShortcutAt(source, localAppData, shortcutDirectory string) (ShortcutR
 			return ShortcutResult{}, fmt.Errorf("同名の別ファイルがあります (%s)．%w", shortcut, ErrShortcutConflict)
 		}
 		link, err := readShellShortcut(shortcut)
-		if err != nil || (!shortcutPathsEqual(link.Target, target) && !shortcutPathsEqual(link.Target, source)) {
+		if err != nil || (!shortcutSameFile(link.Target, target) && !shortcutSameFile(link.Target, source)) {
 			return ShortcutResult{}, fmt.Errorf("同名の別のショートカットがあります (%s)．%w", shortcut, ErrShortcutConflict)
 		}
 		existed = true
